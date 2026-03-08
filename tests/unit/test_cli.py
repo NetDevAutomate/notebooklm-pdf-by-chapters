@@ -19,9 +19,7 @@ class TestSplitCommand:
         assert len(pdfs) == 3
 
     def test_split_with_level(self, sample_pdf, output_dir):
-        result = runner.invoke(
-            app, ["split", str(sample_pdf), "-o", str(output_dir), "-l", "2"]
-        )
+        result = runner.invoke(app, ["split", str(sample_pdf), "-o", str(output_dir), "-l", "2"])
         assert result.exit_code == 0
         pdfs = list(output_dir.glob("*.pdf"))
         assert len(pdfs) == 6
@@ -31,9 +29,7 @@ class TestSplitCommand:
         assert result.exit_code != 0
 
     def test_split_directory(self, sample_pdf, output_dir):
-        result = runner.invoke(
-            app, ["split", str(sample_pdf.parent), "-o", str(output_dir)]
-        )
+        result = runner.invoke(app, ["split", str(sample_pdf.parent), "-o", str(output_dir)])
         assert result.exit_code == 0
 
 
@@ -110,9 +106,7 @@ class TestProcessCommand:
         client, _ = patch_notebooklm
         client.notebooks.list.return_value = []
 
-        result = runner.invoke(
-            app, ["process", str(sample_pdf.parent), "-o", str(output_dir)]
-        )
+        result = runner.invoke(app, ["process", str(sample_pdf.parent), "-o", str(output_dir)])
         assert result.exit_code == 0
 
     def test_process_with_notebook_id(self, sample_pdf, output_dir, patch_notebooklm):
