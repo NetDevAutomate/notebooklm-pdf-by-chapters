@@ -1,0 +1,77 @@
+[project]
+name = "notebooklm-pdf-by-chapters"
+version = "0.1.0"
+description = "Split ebook PDFs by chapter and upload to Google NotebookLM for audio/video overview generation"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+authors = [{name = "NetDevAutomate"}]
+keywords = ["pdf", "ebook", "chapters", "notebooklm", "audio", "video"]
+classifiers = [
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Environment :: Console",
+]
+dependencies = [
+    "typer>=0.12",
+    "pymupdf>=1.25",
+    "notebooklm-py>=0.3",
+    "rich>=13.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pyright>=1.1.408",
+    "ruff>=0.15.5",
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "pytest-cov>=6.0",
+    "pytest-mock>=3.14",
+]
+
+[project.scripts]
+pdf-by-chapters = "pdf_by_chapters.cli:app"
+
+[project.urls]
+Homepage = "https://github.com/NetDevAutomate/notebooklm-pdf-by-chapters"
+Repository = "https://github.com/NetDevAutomate/notebooklm-pdf-by-chapters"
+Issues = "https://github.com/NetDevAutomate/notebooklm-pdf-by-chapters/issues"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pdf_by_chapters"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = [
+    "unit: Fast isolated tests (no external deps)",
+    "integration: Tests that use real PyMuPDF but no network",
+    "pre_deploy: Smoke tests to run before deployment",
+    "post_deploy: Validation tests to run after deployment",
+]
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.coverage.run]
+source = ["pdf_by_chapters"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+fail_under = 80
+
+[tool.ruff]
+target-version = "py311"
+line-length = 99
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+ignore = ["B008"]  # typer.Option/Argument in defaults is the standard pattern
+
+[tool.pyright]
+pythonVersion = "3.11"
+typeCheckingMode = "basic"
