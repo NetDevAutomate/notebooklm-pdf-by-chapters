@@ -511,12 +511,19 @@ def _download_episode(
     filename = f"{chunk.episode:02d}-{safe_name}.mp3"
     out_path = downloads_dir / filename
 
+    if out_path.exists():
+        console.print(f"  [dim]Already downloaded: {out_path}[/dim]")
+        return
+
     async def _dl() -> None:
         async with await NotebookLMClient.from_storage() as client:
             await download_episode_audio(client, state.notebook_id, audio_art.task_id, out_path)
 
-    asyncio.run(_dl())
-    console.print(f"  Downloaded: {out_path}")
+    try:
+        asyncio.run(_dl())
+        console.print(f"  Downloaded: {out_path}")
+    except Exception as exc:
+        console.print(f"  [yellow]Download failed for episode {chunk.episode}: {exc}[/yellow]")
 
 
 @app.command("generate-next", rich_help_panel="Syllabus")
