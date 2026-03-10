@@ -140,6 +140,40 @@ Opens browser for Google sign-in. Cookies stored locally.
 - Use `--episode N` to reset and regenerate the stuck episode
 - Manually edit `syllabus_state.json` and change the chunk status to `"pending"`
 
+### API rejects generation requests (rate limit / quota)
+
+**Symptom:** `audio generation rejected by API: ... (code: USER_DISPLAYABLE_ERROR)` or `RPC CREATE_ARTIFACT failed`
+
+**Cause:** NotebookLM has daily rate limits and generation quotas. After creating many artifacts in a short period, the API starts rejecting new requests.
+
+**Fixes:**
+- Wait 30-60 minutes for rate limits to reset, then retry
+- When using `--all`, the tool automatically retries with exponential backoff (60s, 180s, 300s)
+- If all retries fail, the tool stops. Wait longer and run again — it resumes from the failed episode
+
+### Full reset of syllabus state
+
+**Symptom:** Want to start generation from scratch (e.g., after deleting artifacts manually).
+
+**Fix:** Delete the state file and re-run:
+```bash
+rm ./chapters/syllabus_state.json
+pdf-by-chapters generate-next -n NOTEBOOK_ID -o ./chapters --all --download --no-video
+```
+
+The `--all` flag auto-creates a fresh syllabus when the state file is missing.
+
+### Downloads missing or skipped
+
+**Symptom:** `Download failed for episode N: Audio artifact ... is not ready`
+
+**Cause:** The artifact ID in the state file no longer exists in NotebookLM (e.g., manually deleted, or from a previous syllabus run).
+
+**Fix:** The download failure is non-blocking — the pipeline continues. To re-download, regenerate the episode:
+```bash
+pdf-by-chapters generate-next -o ./chapters --episode N --download
+```
+
 ## Common Errors
 
 | Error | Cause | Fix |
@@ -148,6 +182,8 @@ Opens browser for Google sign-in. Cookies stored locally.
 | `Invalid chapter range '1-3'` | Wrong format | Use `--chapters 1-3` |
 | `start must be >= 1` | Zero or negative chapter number | Chapters are 1-indexed |
 | `pymupdf not found` | Missing dependency | `uv pip install pymupdf` |
-| `No syllabus found` | State file missing | Run `pdf-by-chapters syllabus` first |
+| `No syllabus found` | State file missing | Run `pdf-by-chapters syllabus` first or use `--all` |
 | `Syllabus already exists with in-progress chunks` | Existing state has non-pending chunks | Use `--force` to overwrite |
 | `Episode N not found` | Invalid `--episode` number | Check syllabus with `status` |
+| `generation rejected by API` | Rate limit or daily quota exceeded | Wait 30-60 min and retry |
+| `Audio artifact ... is not ready` | Stale artifact ID from previous run | Delete state file and regenerate |

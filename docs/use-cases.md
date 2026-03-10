@@ -109,49 +109,76 @@ pdf-by-chapters split ./ebooks/ -o ./chapters
 pdf-by-chapters process ./ebooks/
 ```
 
-## UC7: Automated syllabus-driven generation
+## UC7: Full autopilot — one command does everything
 
-Generate a full podcast series from a book with AI-driven chapter grouping.
+Generate a complete podcast series from a book in a single command:
 
 ```bash
 # 1. Upload chapters
 pdf-by-chapters process "Data Engineering.pdf"
 export NOTEBOOK_ID=<id>
 
-# 2. Generate syllabus (audio only)
-pdf-by-chapters syllabus -n $NOTEBOOK_ID -o ./chapters --no-video
+# 2. Generate ALL episodes with auto-download
+pdf-by-chapters generate-next -n $NOTEBOOK_ID -o ./chapters --all --download --no-video
+```
 
-# 3. Generate episodes one at a time (non-blocking)
-pdf-by-chapters generate-next -o ./chapters --no-wait
-pdf-by-chapters status -o ./chapters --poll  # check when ready
+This creates the syllabus, generates each episode sequentially (with retry on failure), and downloads audio files to `./chapters/downloads/`:
 
-# 4. Repeat for each episode
-pdf-by-chapters generate-next -o ./chapters --no-wait
-
-# 5. Monitor with live display
-pdf-by-chapters status -o ./chapters --tail
+```
+downloads/
+  01-setting_the_foundation.mp3
+  02-defining_the_data_engineer.mp3
+  03-architecture_and_technology.mp3
+  ...
 ```
 
 ```mermaid
 flowchart TD
-    A[process PDF] --> B[syllabus --no-video]
-    B --> C[generate-next --no-wait]
-    C --> D[status --poll]
-    D --> E{Completed?}
-    E -->|No| D
-    E -->|Yes| F{More episodes?}
-    F -->|Yes| C
-    F -->|No| G[download]
+    A[process PDF] --> B["generate-next --all --download --no-video"]
+    B --> C[Auto-create syllabus]
+    C --> D[Generate episode 1]
+    D --> E[Download 01-title.mp3]
+    E --> F[Wait 30s]
+    F --> G[Generate episode 2]
+    G --> H[Download 02-title.mp3]
+    H --> I[... repeat ...]
+    I --> J[All done!]
 ```
 
-## UC8: Resume interrupted generation
+## UC8: Step-by-step syllabus generation
 
-If `generate-next` is interrupted (Ctrl+C, connection loss), task IDs are saved.
+For more control over pacing between episodes:
+
+```bash
+# 1. Generate syllabus separately
+pdf-by-chapters syllabus -n $NOTEBOOK_ID -o ./chapters --no-video
+
+# 2. Generate one episode at a time
+pdf-by-chapters generate-next -o ./chapters --download
+pdf-by-chapters generate-next -o ./chapters --download
+# ... repeat when ready
+
+# 3. Check progress anytime
+pdf-by-chapters status -o ./chapters --poll
+```
+
+## UC9: Resume interrupted generation
+
+If `generate-next` is interrupted (Ctrl+C, connection loss), task IDs are already saved to the state file.
 
 ```bash
 # Check what's in progress
 pdf-by-chapters status -o ./chapters --poll
 
-# The generating chunk will either complete or be retried automatically
-pdf-by-chapters generate-next -o ./chapters
+# Resume — automatically picks up where it left off
+pdf-by-chapters generate-next -o ./chapters --all --download --no-video
+```
+
+## UC10: Reset and start over
+
+Delete the state file to regenerate the syllabus from scratch:
+
+```bash
+rm ./chapters/syllabus_state.json
+pdf-by-chapters generate-next -n $NOTEBOOK_ID -o ./chapters --all --download --no-video
 ```

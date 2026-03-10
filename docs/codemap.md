@@ -159,8 +159,8 @@ stateDiagram-v2
 |--------|---------|---------|
 | `models` | `UploadResult`, `NotebookInfo`, `SourceInfo`, `ChunkResult` | `notebooklm`, `cli` |
 | `splitter` | `split_pdf_by_chapters()`, `sanitize_filename()` | `cli.split`, `cli.process`, `notebooklm` |
-| `notebooklm` | `upload_chapters()`, `generate_for_chapters()`, `download_artifacts()`, `list_notebooks()`, `list_sources()`, `delete_notebook()`, `create_syllabus()`, `start_chunk_generation()`, `poll_chunk_status()`, `generate_chunk()` | `cli.*` |
-| `syllabus` | `SyllabusState`, `SyllabusChunk`, `ChunkStatus`, `build_prompt()`, `parse_syllabus_response()`, `read_state()`, `write_state()`, `get_next_chunk()` | `cli.syllabus`, `cli.generate_next`, `cli.status` |
+| `notebooklm` | `upload_chapters()`, `generate_for_chapters()`, `download_artifacts()`, `list_notebooks()`, `list_sources()`, `delete_notebook()`, `create_syllabus()`, `start_chunk_generation()`, `poll_chunk_status()`, `generate_chunk()`, `delete_artifact()`, `download_episode_audio()` | `cli.*` |
+| `syllabus` | `SyllabusState`, `SyllabusChunk`, `ChunkStatus`, `build_prompt()`, `parse_syllabus_response()`, `read_state()`, `write_state()`, `get_next_chunk()`, `title_case_name()` | `cli.syllabus`, `cli.generate_next`, `cli.status` |
 
 ## Dependencies
 

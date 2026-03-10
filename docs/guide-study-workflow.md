@@ -102,16 +102,20 @@ flowchart LR
 
 ### Syllabus Mode (Recommended)
 
-Instead of manually choosing batches, use the `syllabus` command to let NotebookLM group chapters by topic. This removes the decision fatigue of "which chapters should I batch together?"
+Instead of manually choosing batches, use `--all` to let NotebookLM group chapters by topic and generate everything automatically. This removes the decision fatigue of "which chapters should I batch together?"
+
+**Full autopilot** — one command generates the entire podcast series:
 
 ```bash
-pdf-by-chapters syllabus -n $NOTEBOOK_ID -o ./chapters --no-video
+pdf-by-chapters generate-next -n $NOTEBOOK_ID -o ./chapters --all --download --no-video
 ```
 
-Then generate episodes one at a time as you're ready for them:
+This creates the syllabus, generates each episode, and downloads the audio files to `./chapters/downloads/`. Episodes are generated sequentially with gaps between them and automatic retry on failure.
+
+**Step-by-step** — for more control:
 
 ```bash
-pdf-by-chapters generate-next -o ./chapters --no-wait
+pdf-by-chapters generate-next -o ./chapters --download
 ```
 
 Check progress anytime: `pdf-by-chapters status -o ./chapters --poll`

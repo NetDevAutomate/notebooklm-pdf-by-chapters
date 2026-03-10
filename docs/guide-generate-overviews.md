@@ -106,7 +106,53 @@ Smaller ranges = more detailed overviews. Start small.
 
 Instead of manually choosing chapter ranges, let NotebookLM create a podcast syllabus that groups chapters into logical episodes.
 
-### Step 1: Generate a Syllabus
+### One-Command Pipeline (Recommended)
+
+Generate an entire podcast series from a book in a single command:
+
+```bash
+pdf-by-chapters generate-next -n NOTEBOOK_ID -o ./chapters --all --download --no-video
+```
+
+This does everything:
+1. Creates a syllabus if one doesn't exist (groups chapters into 1-2 chapter episodes)
+2. Generates audio for each episode sequentially (30s gap between episodes)
+3. Retries failed episodes with exponential backoff (60s, 180s, 300s)
+4. Deletes failed artifacts before each retry to prevent orphans
+5. Downloads each completed audio to `./chapters/downloads/01-episode_title.mp3`
+6. Renames artifacts in NotebookLM with Title Case episode names
+
+```mermaid
+flowchart TD
+    A["generate-next --all --download"] --> B{Syllabus exists?}
+    B -->|No| C[Create syllabus via chat API]
+    B -->|Yes| D[Read syllabus_state.json]
+    C --> D
+    D --> E[Next pending episode]
+    E --> F[Generate audio]
+    F --> G{Success?}
+    G -->|Yes| H[Download to ./downloads/]
+    H --> I{More episodes?}
+    G -->|No| J[Delete artifact]
+    J --> K{Retries left?}
+    K -->|Yes| L["Wait 60s/180s/300s"]
+    L --> F
+    K -->|No| M[Stop with error]
+    I -->|Yes| N[Wait 30s]
+    N --> E
+    I -->|No| O[Done!]
+```
+
+**To reset and start over**, delete the state file:
+
+```bash
+rm ./chapters/syllabus_state.json
+pdf-by-chapters generate-next -n NOTEBOOK_ID -o ./chapters --all --download --no-video
+```
+
+### Step-by-Step (More Control)
+
+#### Step 1: Generate a Syllabus
 
 ```bash
 pdf-by-chapters syllabus -n NOTEBOOK_ID -o ./chapters --no-video
@@ -114,7 +160,7 @@ pdf-by-chapters syllabus -n NOTEBOOK_ID -o ./chapters --no-video
 
 This sends a prompt to NotebookLM's chat, asking it to group your chapters into 1-2 chapter episodes by topic. The result is saved as `syllabus_state.json`.
 
-### Step 2: Generate Episodes One at a Time
+#### Step 2: Generate Episodes One at a Time
 
 ```bash
 # Non-blocking (returns immediately)
@@ -122,9 +168,12 @@ pdf-by-chapters generate-next -o ./chapters --no-wait
 
 # Or blocking (waits for completion, Ctrl+C safe)
 pdf-by-chapters generate-next -o ./chapters
+
+# With auto-download
+pdf-by-chapters generate-next -o ./chapters --download
 ```
 
-### Step 3: Check Progress
+#### Step 3: Check Progress
 
 ```bash
 pdf-by-chapters status -o ./chapters --poll
@@ -132,18 +181,9 @@ pdf-by-chapters status -o ./chapters --poll
 
 Use `--tail` for a live-updating display that polls every 30 seconds.
 
-### Step 4: Repeat
+#### Step 4: Repeat
 
 Run `generate-next` again for the next episode. The tool automatically picks the next pending episode from the syllabus.
-
-```mermaid
-flowchart LR
-    A[syllabus] --> B[generate-next]
-    B --> C[status --poll]
-    C --> D{All done?}
-    D -->|No| B
-    D -->|Yes| E[download]
-```
 
 > **Known behaviour:** The `syllabus` command uses NotebookLM's chat API (`chat.ask()`), which may trigger Google's backend to auto-generate artifacts (an audio overview and slide deck) as a platform side effect. These are separate from the scoped artifacts created by `generate-next` and can be safely ignored or deleted.
 

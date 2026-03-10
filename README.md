@@ -215,6 +215,14 @@ pdf-by-chapters generate-next -o ./chapters
 
 This reads the state file, picks the next pending episode, fires the generation request, and polls until complete. The notebook ID comes from the state file — no need to pass `-n`.
 
+**Generate all episodes in one command** (recommended):
+
+```bash
+pdf-by-chapters generate-next -n NOTEBOOK_ID -o ./chapters --all --download --no-video
+```
+
+The `--all` flag auto-creates the syllabus if missing, then generates every episode sequentially with a 30-second gap between episodes. On failure, it retries with exponential backoff (60s, 180s, 300s) and deletes failed artifacts before each retry. The `--download` flag downloads each completed audio to `<output_dir>/downloads/01-episode_title.mp3`.
+
 For non-blocking mode (returns immediately, ideal for scripting or agent workflows):
 
 ```bash
@@ -228,6 +236,13 @@ pdf-by-chapters generate-next -o ./chapters --episode 3
 ```
 
 If interrupted with Ctrl+C, task IDs are already saved to the state file. Resume with `status --poll`.
+
+**Reset and start over:**
+
+```bash
+rm ./chapters/syllabus_state.json
+pdf-by-chapters generate-next -n NOTEBOOK_ID -o ./chapters --all --download --no-video
+```
 
 ### `status` — Check progress
 
@@ -277,17 +292,23 @@ pdf-by-chapters download -n NOTEBOOK_ID -o ./overviews
 pdf-by-chapters process "Fundamentals of Data Engineering.pdf"
 export NOTEBOOK_ID=<id from output>
 
-# 2. Generate a podcast syllabus (audio only)
+# 2. Generate ALL episodes with auto-download (one command does everything)
+pdf-by-chapters generate-next -n $NOTEBOOK_ID -o ./chapters --all --download --no-video
+```
+
+This single command creates the syllabus, generates each episode sequentially (with retry on failure), and downloads the audio files to `./chapters/downloads/`.
+
+For more control, run step-by-step:
+
+```bash
+# Generate syllabus separately
 pdf-by-chapters syllabus -n $NOTEBOOK_ID -o ./chapters --no-video
 
-# 3. Generate episodes one at a time
+# Generate episodes one at a time
 pdf-by-chapters generate-next -o ./chapters --no-wait
 pdf-by-chapters status -o ./chapters --poll   # check when ready
 pdf-by-chapters generate-next -o ./chapters --no-wait
 # ... repeat for each episode
-
-# 4. Download everything
-pdf-by-chapters download -n $NOTEBOOK_ID -o ./overviews
 ```
 
 ## Options Reference
@@ -307,6 +328,8 @@ pdf-by-chapters download -n $NOTEBOOK_ID -o ./overviews
 | `--force` | syllabus | Overwrite existing syllabus with in-progress chunks | — |
 | `-e, --episode` | generate-next | Target a specific episode by number | — |
 | `--no-wait` | generate-next | Start generation and return immediately | — |
+| `-a, --all` | generate-next | Generate all episodes sequentially with retry | — |
+| `-d, --download` | generate-next | Download audio after each completed episode | — |
 | `--poll` | status | Check API for status of generating chunks | — |
 | `--tail` | status | Live-updating display until generation completes | — |
 
