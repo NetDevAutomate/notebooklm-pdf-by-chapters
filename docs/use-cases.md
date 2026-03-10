@@ -108,3 +108,50 @@ pdf-by-chapters split ./ebooks/ -o ./chapters
 # Process all (each gets its own notebook)
 pdf-by-chapters process ./ebooks/
 ```
+
+## UC7: Automated syllabus-driven generation
+
+Generate a full podcast series from a book with AI-driven chapter grouping.
+
+```bash
+# 1. Upload chapters
+pdf-by-chapters process "Data Engineering.pdf"
+export NOTEBOOK_ID=<id>
+
+# 2. Generate syllabus (audio only)
+pdf-by-chapters syllabus -n $NOTEBOOK_ID -o ./chapters --no-video
+
+# 3. Generate episodes one at a time (non-blocking)
+pdf-by-chapters generate-next -o ./chapters --no-wait
+pdf-by-chapters status -o ./chapters --poll  # check when ready
+
+# 4. Repeat for each episode
+pdf-by-chapters generate-next -o ./chapters --no-wait
+
+# 5. Monitor with live display
+pdf-by-chapters status -o ./chapters --tail
+```
+
+```mermaid
+flowchart TD
+    A[process PDF] --> B[syllabus --no-video]
+    B --> C[generate-next --no-wait]
+    C --> D[status --poll]
+    D --> E{Completed?}
+    E -->|No| D
+    E -->|Yes| F{More episodes?}
+    F -->|Yes| C
+    F -->|No| G[download]
+```
+
+## UC8: Resume interrupted generation
+
+If `generate-next` is interrupted (Ctrl+C, connection loss), task IDs are saved.
+
+```bash
+# Check what's in progress
+pdf-by-chapters status -o ./chapters --poll
+
+# The generating chunk will either complete or be retried automatically
+pdf-by-chapters generate-next -o ./chapters
+```

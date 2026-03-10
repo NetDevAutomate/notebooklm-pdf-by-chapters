@@ -97,6 +97,49 @@ notebooklm login
 
 Opens browser for Google sign-in. Cookies stored locally.
 
+## Syllabus Issues
+
+### Syllabus parsing failed
+
+**Symptom:** `Could not parse syllabus: No episodes found in LLM response`
+
+**Cause:** NotebookLM's chat response didn't match the expected format. The tool automatically falls back to fixed-size chunks (default 2 chapters per episode).
+
+**Fixes:**
+- Re-run `syllabus --force` to try again (LLM responses vary)
+- Adjust `--max-chapters` to change grouping size
+- Manually edit `syllabus_state.json` to customise episode groupings
+
+### Auto-generated artifacts from syllabus command
+
+**Symptom:** Running `syllabus` creates unexpected audio/slide deck artifacts in NotebookLM.
+
+**Cause:** This is a NotebookLM platform behaviour. When `chat.ask()` sends a message, Google's backend proactively auto-generates artifacts (audio overview, slide deck) as a side effect. This happens in the web UI too.
+
+**Workaround:** These auto-generated artifacts are separate from the scoped artifacts created by `generate-next`. They can be safely ignored or deleted via `notebooklm artifact delete <id>`.
+
+### Duplicate/identical audio content across episodes
+
+**Symptom:** Different episodes produce identical-sounding audio.
+
+**Cause:** NotebookLM's audio generation may not fully respect `source_ids` scoping, especially with the DEEP_DIVE format. The model may pull context from the entire notebook.
+
+**Fixes:**
+- Re-run `syllabus --force` to regenerate with updated scoped instructions
+- The tool now includes chapter titles in the generation instructions to help NotebookLM focus
+- Use `--episode N` to regenerate a specific episode
+
+### State file stuck in "generating"
+
+**Symptom:** `generate-next` keeps trying to resume a chunk that was interrupted.
+
+**Cause:** The process was killed before completion. Task IDs are saved to the state file.
+
+**Fixes:**
+- Run `status --poll` to check if the generation actually completed on NotebookLM's side
+- Use `--episode N` to reset and regenerate the stuck episode
+- Manually edit `syllabus_state.json` and change the chunk status to `"pending"`
+
 ## Common Errors
 
 | Error | Cause | Fix |
@@ -105,3 +148,6 @@ Opens browser for Google sign-in. Cookies stored locally.
 | `Invalid chapter range '1-3'` | Wrong format | Use `--chapters 1-3` |
 | `start must be >= 1` | Zero or negative chapter number | Chapters are 1-indexed |
 | `pymupdf not found` | Missing dependency | `uv pip install pymupdf` |
+| `No syllabus found` | State file missing | Run `pdf-by-chapters syllabus` first |
+| `Syllabus already exists with in-progress chunks` | Existing state has non-pending chunks | Use `--force` to overwrite |
+| `Episode N not found` | Invalid `--episode` number | Check syllabus with `status` |

@@ -91,6 +91,12 @@ def mock_notebooklm_client():
 
     client.artifacts.download_audio.return_value = None
     client.artifacts.download_video.return_value = None
+    client.artifacts.rename.return_value = None
+
+    mock_ask_result = MagicMock()
+    mock_ask_result.answer = 'Episode 1: "Test Episode"\nChapters: 1\nSummary: Test.'
+    mock_ask_result.conversation_id = "test-conv-id"
+    client.chat.ask.return_value = mock_ask_result
 
     return client
 

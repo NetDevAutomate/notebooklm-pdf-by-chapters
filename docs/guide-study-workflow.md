@@ -99,3 +99,21 @@ flowchart LR
 | Low focus day | 1 chapter | Deep, manageable |
 | Normal day | 2–3 chapters | Good balance |
 | Hyperfocus mode | 4–6 chapters | Ride the wave |
+
+### Syllabus Mode (Recommended)
+
+Instead of manually choosing batches, use the `syllabus` command to let NotebookLM group chapters by topic. This removes the decision fatigue of "which chapters should I batch together?"
+
+```bash
+pdf-by-chapters syllabus -n $NOTEBOOK_ID -o ./chapters --no-video
+```
+
+Then generate episodes one at a time as you're ready for them:
+
+```bash
+pdf-by-chapters generate-next -o ./chapters --no-wait
+```
+
+Check progress anytime: `pdf-by-chapters status -o ./chapters --poll`
+
+See [Generating Audio & Video Overviews](guide-generate-overviews.md) for the full syllabus workflow.
