@@ -78,7 +78,11 @@ async def _request_chapter_artifact(
     source_ids: list[str],
     instructions: str,
 ) -> str:
-    """Fire off a single chapter generation request. Returns task_id."""
+    """Fire off a single chapter generation request. Returns task_id.
+
+    Raises:
+        RuntimeError: If the API returns a failed status (rate limit, quota, etc.)
+    """
     if label == "audio":
         status = await client.artifacts.generate_audio(
             notebook_id,
@@ -95,6 +99,15 @@ async def _request_chapter_artifact(
         )
     else:
         raise ValueError(f"Unknown artifact type: {label}")
+
+    if status.is_failed or not status.task_id:
+        error_msg = status.error or "unknown error"
+        error_code = status.error_code or ""
+        raise RuntimeError(
+            f"{label} generation rejected by API: {error_msg}"
+            + (f" (code: {error_code})" if error_code else "")
+        )
+
     return status.task_id
 
 

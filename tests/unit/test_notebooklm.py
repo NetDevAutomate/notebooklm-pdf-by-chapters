@@ -192,7 +192,7 @@ class TestGenerateForChapters:
         client.artifacts.poll_status.return_value = failed
         # First generate_audio succeeds, retry raises
         client.artifacts.generate_audio.side_effect = [
-            MagicMock(task_id="task-1"),
+            MagicMock(task_id="task-1", is_failed=False),
             RuntimeError("retry failed"),
         ]
 
