@@ -17,6 +17,7 @@ from pdf_by_chapters.syllabus import (
     map_sources_to_chapters,
     parse_syllabus_response,
     read_state,
+    title_case_name,
     write_state,
 )
 
@@ -324,3 +325,27 @@ class TestHasNonPendingChunks:
 
     def test_one_completed_returns_true(self, sample_state):
         assert has_non_pending_chunks(sample_state)
+
+
+class TestTitleCaseName:
+    """Tests for title_case_name."""
+
+    @pytest.mark.parametrize(
+        "input_name,expected",
+        [
+            pytest.param("setting the stage", "Setting The Stage", id="lowercase"),
+            pytest.param("ARCHITECTURE AND DESIGN", "Architecture And Design", id="uppercase"),
+            pytest.param("data   storage", "Data Storage", id="extra-whitespace"),
+            pytest.param("hello! world?", "Hello World", id="special-chars-removed"),
+            pytest.param("", "", id="empty"),
+            pytest.param("   ", "", id="whitespace-only"),
+            pytest.param("single", "Single", id="single-word"),
+        ],
+    )
+    def test_title_case(self, input_name, expected):
+        assert title_case_name(input_name) == expected
+
+    def test_truncates_at_100_chars(self):
+        long_name = "a " * 100
+        result = title_case_name(long_name)
+        assert len(result) <= 100

@@ -15,6 +15,26 @@ logger = logging.getLogger(__name__)
 
 STATE_FILENAME = "syllabus_state.json"
 
+_TITLE_CLEAN_RE = re.compile(r"[^\w\s-]")
+
+
+def title_case_name(name: str) -> str:
+    """Clean a title for NotebookLM artifact display. Preserves Title Case.
+
+    Unlike sanitize_filename() which lowercases for filesystem paths,
+    this keeps capitalisation for readable display names in the NotebookLM UI.
+
+    Args:
+        name: Raw episode title.
+
+    Returns:
+        Cleaned title with each word capitalised, max 100 chars.
+    """
+    name = _TITLE_CLEAN_RE.sub("", name)
+    name = " ".join(name.split())
+    return name[:100].strip().title()
+
+
 # Matches: Episode 1: "Title Here"\nChapters: 1, 2\nSummary: ...
 _EPISODE_RE = re.compile(
     r'Episode\s+(\d+):\s*"([^"]+)"\s*\n'

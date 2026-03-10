@@ -375,6 +375,150 @@ def syllabus(
     console.print(f"Next: Run [bold]pdf-by-chapters generate-next -o {output_dir}[/bold]")
 
 
+_RETRY_WAITS = [60, 180, 300]  # seconds between retries in --all mode
+_EPISODE_GAP = 30  # seconds between episodes in --all mode
+
+
+def _generate_one_episode(
+    state: Any,
+    chunk: Any,
+    state_path: Path,
+    output_dir: Path,
+    gen_audio: bool,
+    gen_video: bool,
+    no_wait: bool,
+    timeout: int,
+) -> bool:
+    """Generate a single episode. Returns True if completed, False if failed."""
+    from notebooklm import NotebookLMClient
+
+    from pdf_by_chapters.notebooklm import poll_chunk_status, start_chunk_generation
+    from pdf_by_chapters.syllabus import ChunkArtifact, ChunkStatus, title_case_name, write_state
+
+    console.print(
+        f"Generating episode {chunk.episode}: [bold]{chunk.title}[/bold] "
+        f"(chapters {', '.join(str(c) for c in chunk.chapters)})"
+    )
+
+    # Fire generation and persist task IDs immediately
+    async def _start() -> dict[str, str]:
+        async with await NotebookLMClient.from_storage() as client:
+            return await start_chunk_generation(
+                client,
+                state.notebook_id,
+                chunk.source_ids,
+                chunk.title,
+                generate_audio=gen_audio,
+                generate_video=gen_video,
+                chapter_titles=chunk.chapter_titles or None,
+            )
+
+    tasks = asyncio.run(_start())
+    if not tasks:
+        console.print("[red]Failed to start any generation requests.[/red]")
+        chunk.status = ChunkStatus.FAILED
+        write_state(state, state_path)
+        return False
+
+    for label, task_id in tasks.items():
+        chunk.artifacts[label] = ChunkArtifact(task_id=task_id, status="in_progress")
+    chunk.status = ChunkStatus.GENERATING
+    write_state(state, state_path)
+
+    if no_wait:
+        console.print(
+            f"[green]Generation started for episode {chunk.episode}.[/green]\n"
+            f"Use [bold]pdf-by-chapters status -o {output_dir} --poll[/bold] to check progress."
+        )
+        return True  # "started" counts as success for no-wait
+
+    console.print("[dim]Polling every 30s... (Ctrl+C is safe)[/dim]")
+
+    async def _poll_loop() -> None:
+        import contextlib
+
+        elapsed = 0
+        poll_interval = 30
+        async with await NotebookLMClient.from_storage() as client:
+            while elapsed < timeout:
+                await asyncio.sleep(poll_interval)
+                elapsed += poll_interval
+                pending_tasks = {
+                    lbl: art.task_id
+                    for lbl, art in chunk.artifacts.items()
+                    if art.task_id and art.status not in ("completed", "failed")
+                }
+                if not pending_tasks:
+                    break
+                statuses = await poll_chunk_status(client, state.notebook_id, pending_tasks)
+                for lbl, new_status in statuses.items():
+                    chunk.artifacts[lbl].status = new_status
+                write_state(state, state_path)
+                if all(a.status in ("completed", "failed") for a in chunk.artifacts.values()):
+                    break
+
+            # Rename completed artifacts (best-effort, Title Case)
+            display_title = title_case_name(chunk.title)
+            if display_title:
+                for _lbl, art in chunk.artifacts.items():
+                    if art.task_id and art.status == "completed":
+                        with contextlib.suppress(Exception):
+                            await client.artifacts.rename(
+                                state.notebook_id, art.task_id, display_title
+                            )
+
+    try:
+        asyncio.run(_poll_loop())
+    except KeyboardInterrupt:
+        console.print(
+            "\n[yellow]Interrupted. Task IDs saved to state file.[/yellow]\n"
+            f"Resume with: [bold]pdf-by-chapters status -o {output_dir} --poll[/bold]"
+        )
+        raise typer.Exit(0) from None
+
+    all_done = all(a.status == "completed" for a in chunk.artifacts.values())
+    chunk.status = ChunkStatus.COMPLETED if all_done else ChunkStatus.FAILED
+    write_state(state, state_path)
+
+    if chunk.status == ChunkStatus.COMPLETED:
+        console.print(f"[green]Episode {chunk.episode} completed.[/green]")
+        return True
+
+    console.print(f"[yellow]Episode {chunk.episode} had failures.[/yellow]")
+    for label, art in chunk.artifacts.items():
+        if art.status != "completed":
+            console.print(f"  {label}: {art.status}")
+    return False
+
+
+def _download_episode(
+    state: Any,
+    chunk: Any,
+    output_dir: Path,
+) -> None:
+    """Download completed audio for a single episode."""
+    from notebooklm import NotebookLMClient
+
+    from pdf_by_chapters.notebooklm import download_episode_audio
+    from pdf_by_chapters.splitter import sanitize_filename as _sanitize
+
+    audio_art = chunk.artifacts.get("audio")
+    if not audio_art or not audio_art.task_id or audio_art.status != "completed":
+        return
+
+    downloads_dir = output_dir / "downloads"
+    safe_name = _sanitize(chunk.title)
+    filename = f"{chunk.episode:02d}-{safe_name}.mp3"
+    out_path = downloads_dir / filename
+
+    async def _dl() -> None:
+        async with await NotebookLMClient.from_storage() as client:
+            await download_episode_audio(client, state.notebook_id, audio_art.task_id, out_path)
+
+    asyncio.run(_dl())
+    console.print(f"  Downloaded: {out_path}")
+
+
 @app.command("generate-next", rich_help_panel="Syllabus")
 def generate_next(
     output_dir: Path = typer.Option(Path("./chapters"), "--output-dir", "-o"),
@@ -389,19 +533,34 @@ def generate_next(
     timeout: int = typer.Option(
         900, "--timeout", "-t", help="Timeout in seconds (default: 900 = 15min)."
     ),
+    all_episodes: bool = typer.Option(
+        False, "--all", "-a", help="Generate all episodes sequentially with retry."
+    ),
+    download: bool = typer.Option(
+        False, "--download", "-d", help="Download audio after each completed episode."
+    ),
+    notebook_id: str | None = typer.Option(
+        None,
+        "--notebook-id",
+        "-n",
+        envvar="NOTEBOOK_ID",
+        help="Notebook ID (required with --all if no syllabus exists).",
+    ),
 ) -> None:
     """Generate audio/video for the next pending episode.
 
     Uses notebook_id from the syllabus state file (not --notebook-id).
-    With --no-wait, fires the request and returns immediately. Use 'status --poll'
-    to check progress later.
+    With --no-wait, fires the request and returns immediately.
+    With --all, generates all episodes sequentially with exponential backoff retry.
+    With --download, downloads audio after each completed episode.
     """
+    import time
+
     from notebooklm import NotebookLMClient
 
-    from pdf_by_chapters.notebooklm import start_chunk_generation
+    from pdf_by_chapters.notebooklm import delete_artifact
     from pdf_by_chapters.syllabus import (
         STATE_FILENAME,
-        ChunkArtifact,
         ChunkStatus,
         SyllabusStateError,
         get_next_chunk,
@@ -411,13 +570,104 @@ def generate_next(
 
     state_path = output_dir / STATE_FILENAME
 
+    # --all mode: auto-create syllabus if missing, then loop all episodes
+    if all_episodes:
+        if not state_path.is_file():
+            nb_id = _get_notebook_id(notebook_id)
+            console.print("[dim]No syllabus found. Creating one...[/dim]")
+            # Invoke syllabus command programmatically
+            syllabus(
+                notebook_id=nb_id,
+                output_dir=output_dir,
+                max_chapters=2,
+                book_name=None,
+                force=False,
+                no_audio=no_audio,
+                no_video=no_video,
+            )
+
+        state = read_state(state_path)
+        gen_audio = (not no_audio) and state.generate_audio
+        gen_video = (not no_video) and state.generate_video
+
+        for chunk in sorted(state.chunks.values(), key=lambda c: c.episode):
+            if chunk.status == ChunkStatus.COMPLETED:
+                console.print(f"[dim]Episode {chunk.episode} already completed. Skipping.[/dim]")
+                if download:
+                    _download_episode(state, chunk, output_dir)
+                continue
+
+            # Attempt generation with exponential backoff retry
+            success = False
+            for attempt in range(len(_RETRY_WAITS) + 1):
+                chunk.status = ChunkStatus.PENDING
+                chunk.artifacts = {}
+                write_state(state, state_path)
+
+                success = _generate_one_episode(
+                    state,
+                    chunk,
+                    state_path,
+                    output_dir,
+                    gen_audio,
+                    gen_video,
+                    no_wait=False,
+                    timeout=timeout,
+                )
+
+                if success:
+                    if download:
+                        _download_episode(state, chunk, output_dir)
+                    break
+
+                # Failed — delete artifacts and retry with backoff
+                artifacts_to_delete = [
+                    art.task_id for art in chunk.artifacts.values() if art.task_id
+                ]
+
+                async def _cleanup(ids: list[str]) -> None:
+                    async with await NotebookLMClient.from_storage() as client:
+                        for aid in ids:
+                            await delete_artifact(client, state.notebook_id, aid)
+
+                asyncio.run(_cleanup(artifacts_to_delete))
+
+                if attempt < len(_RETRY_WAITS):
+                    wait = _RETRY_WAITS[attempt]
+                    console.print(
+                        f"[yellow]Retrying in {wait}s "
+                        f"(attempt {attempt + 2}/{len(_RETRY_WAITS) + 1})...[/yellow]"
+                    )
+                    time.sleep(wait)
+                else:
+                    console.print(
+                        f"[red]Episode {chunk.episode} failed after "
+                        f"{len(_RETRY_WAITS) + 1} attempts. Stopping.[/red]"
+                    )
+                    raise typer.Exit(1)
+
+            # Gap between episodes to respect rate limits
+            remaining = [
+                c
+                for c in state.chunks.values()
+                if c.episode > chunk.episode and c.status != ChunkStatus.COMPLETED
+            ]
+            if remaining and success:
+                console.print(f"[dim]Waiting {_EPISODE_GAP}s before next episode...[/dim]")
+                time.sleep(_EPISODE_GAP)
+
+        total = len(state.chunks)
+        completed = sum(1 for c in state.chunks.values() if c.status == ChunkStatus.COMPLETED)
+        console.print(f"\n[green]Done. {completed}/{total} episodes completed.[/green]")
+        return
+
+    # Single-episode mode (existing behaviour)
     try:
         state = read_state(state_path)
     except SyllabusStateError as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(1) from None
 
-    # Select chunk
     if episode is not None:
         if episode not in state.chunks:
             max_ep = max(state.chunks.keys()) if state.chunks else 0
@@ -443,112 +693,25 @@ def generate_next(
             )
             raise typer.Exit(0)
 
-    # Determine audio/video flags
     gen_audio = (not no_audio) and state.generate_audio
     gen_video = (not no_video) and state.generate_video
 
-    console.print(
-        f"Generating episode {chunk.episode}: [bold]{chunk.title}[/bold] "
-        f"(chapters {', '.join(str(c) for c in chunk.chapters)})"
+    success = _generate_one_episode(
+        state,
+        chunk,
+        state_path,
+        output_dir,
+        gen_audio,
+        gen_video,
+        no_wait,
+        timeout,
     )
 
-    # Fire generation requests and persist task IDs immediately
-    # (recoverable on Ctrl+C — task_ids saved before polling starts)
+    if success and download and not no_wait:
+        _download_episode(state, chunk, output_dir)
 
-    async def _start() -> dict[str, str]:
-        async with await NotebookLMClient.from_storage() as client:
-            return await start_chunk_generation(
-                client,
-                state.notebook_id,
-                chunk.source_ids,
-                chunk.title,
-                generate_audio=gen_audio,
-                generate_video=gen_video,
-                chapter_titles=chunk.chapter_titles or None,
-            )
-
-    tasks = asyncio.run(_start())
-    if not tasks:
-        console.print("[red]Failed to start any generation requests.[/red]")
-        chunk.status = ChunkStatus.FAILED
-        write_state(state, state_path)
-        raise typer.Exit(1)
-
-    for label, task_id in tasks.items():
-        chunk.artifacts[label] = ChunkArtifact(task_id=task_id, status="in_progress")
-    chunk.status = ChunkStatus.GENERATING
-    write_state(state, state_path)
-
-    if no_wait:
-        console.print(
-            f"[green]Generation started for episode {chunk.episode}.[/green]\n"
-            f"Use [bold]pdf-by-chapters status -o {output_dir} --poll[/bold] to check progress."
-        )
-        return
-
-    console.print("[dim]Generation started. Polling every 30s... (Ctrl+C is safe)[/dim]")
-
-    # Now poll to completion
-    from pdf_by_chapters.notebooklm import poll_chunk_status
-
-    async def _poll_loop() -> None:
-        elapsed = 0
-        poll_interval = 30
-        async with await NotebookLMClient.from_storage() as client:
-            while elapsed < timeout:
-                await asyncio.sleep(poll_interval)
-                elapsed += poll_interval
-                pending_tasks = {
-                    label: art.task_id
-                    for label, art in chunk.artifacts.items()
-                    if art.task_id and art.status not in ("completed", "failed")
-                }
-                if not pending_tasks:
-                    break
-                statuses = await poll_chunk_status(client, state.notebook_id, pending_tasks)
-                for label, new_status in statuses.items():
-                    chunk.artifacts[label].status = new_status
-                write_state(state, state_path)
-
-                # Check if all done
-                if all(a.status in ("completed", "failed") for a in chunk.artifacts.values()):
-                    break
-
-            # Rename completed artifacts (best-effort)
-            safe_title = sanitize_filename(chunk.title)[:100]
-            if safe_title:
-                import contextlib
-
-                for _label, art in chunk.artifacts.items():
-                    if art.task_id and art.status == "completed":
-                        with contextlib.suppress(Exception):
-                            await client.artifacts.rename(
-                                state.notebook_id, art.task_id, safe_title
-                            )
-
-    try:
-        asyncio.run(_poll_loop())
-    except KeyboardInterrupt:
-        console.print(
-            "\n[yellow]Interrupted. Task IDs saved to state file.[/yellow]\n"
-            f"Resume with: [bold]pdf-by-chapters status -o {output_dir} --poll[/bold]"
-        )
-        raise typer.Exit(0) from None
-
-    # Update final chunk status
-    all_done = all(a.status == "completed" for a in chunk.artifacts.values())
-    chunk.status = ChunkStatus.COMPLETED if all_done else ChunkStatus.FAILED
-    write_state(state, state_path)
-
-    if chunk.status == ChunkStatus.COMPLETED:
-        console.print(f"[green]Episode {chunk.episode} completed.[/green]")
-    else:
-        console.print(f"[yellow]Episode {chunk.episode} had failures.[/yellow]")
-        for label, art in chunk.artifacts.items():
-            if art.status != "completed":
-                console.print(f"  {label}: {art.status}")
-
-    console.print("\n[dim]Rate limits apply. Wait before generating the next chunk.[/dim]")
+    if not no_wait:
+        console.print("\n[dim]Rate limits apply. Wait before generating the next chunk.[/dim]")
 
 
 @app.command(rich_help_panel="Syllabus")
@@ -589,7 +752,7 @@ def status(
             from notebooklm import NotebookLMClient
 
             from pdf_by_chapters.notebooklm import poll_chunk_status
-            from pdf_by_chapters.splitter import sanitize_filename
+            from pdf_by_chapters.syllabus import title_case_name as _title_case
 
             async def _poll_all() -> None:
                 async with await NotebookLMClient.from_storage() as client:
@@ -611,15 +774,15 @@ def status(
                         if all_done:
                             chunk.status = ChunkStatus.COMPLETED
                             # Best-effort rename
-                            safe_title = sanitize_filename(chunk.title)[:100]
-                            if safe_title:
+                            display_title = _title_case(chunk.title)
+                            if display_title:
                                 for _label, art in chunk.artifacts.items():
                                     if art.task_id and art.status == "completed":
                                         with contextlib.suppress(Exception):
                                             await client.artifacts.rename(
                                                 state.notebook_id,
                                                 art.task_id,
-                                                safe_title,
+                                                display_title,
                                             )
                         elif any_failed:
                             chunk.status = ChunkStatus.FAILED

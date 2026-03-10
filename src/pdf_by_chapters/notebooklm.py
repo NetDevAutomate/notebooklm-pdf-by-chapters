@@ -253,6 +253,38 @@ async def delete_notebook(notebook_id: str) -> None:
         logger.info("Deleted notebook %s", notebook_id)
 
 
+async def delete_artifact(
+    client: NotebookLMClient,
+    notebook_id: str,
+    artifact_id: str,
+) -> None:
+    """Delete an artifact by ID. Best-effort, logs warning on failure."""
+    try:
+        await client.artifacts.delete(notebook_id, artifact_id)
+        logger.info("Deleted artifact %s", artifact_id)
+    except Exception as e:
+        logger.warning("Failed to delete artifact %s: %s", artifact_id, e)
+
+
+async def download_episode_audio(
+    client: NotebookLMClient,
+    notebook_id: str,
+    artifact_id: str,
+    output_path: Path,
+) -> None:
+    """Download a single audio artifact to the specified path.
+
+    Args:
+        client: An open NotebookLM client.
+        notebook_id: The notebook ID.
+        artifact_id: The audio artifact ID (same as task_id).
+        output_path: Full path to save the file (e.g. downloads/01-title.mp3).
+    """
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    await client.artifacts.download_audio(notebook_id, str(output_path), artifact_id=artifact_id)
+    logger.info("Downloaded %s", output_path)
+
+
 async def create_syllabus(
     client: NotebookLMClient,
     notebook_id: str,
