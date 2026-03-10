@@ -3,6 +3,7 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from pdf_by_chapters.notebooklm import (
+    create_syllabus,
     delete_notebook,
     download_artifacts,
     generate_for_chapters,
@@ -231,3 +232,27 @@ class TestDeleteNotebook:
         client, _ = patch_notebooklm
         await delete_notebook("test-notebook-id")
         client.notebooks.delete.assert_called_once_with("test-notebook-id")
+
+
+class TestCreateSyllabus:
+    """Tests for create_syllabus."""
+
+    async def test_returns_answer(self, patch_notebooklm):
+        client, _ = patch_notebooklm
+        result = await create_syllabus(client, "nb-123", "Create a syllabus")
+        assert "Episode 1" in result
+        client.chat.ask.assert_called_once_with("nb-123", "Create a syllabus")
+
+    async def test_empty_response(self, patch_notebooklm):
+        client, _ = patch_notebooklm
+        mock_result = MagicMock()
+        mock_result.answer = ""
+        client.chat.ask.return_value = mock_result
+        result = await create_syllabus(client, "nb-123", "prompt")
+        assert result == ""
+
+    async def test_passes_notebook_id(self, patch_notebooklm):
+        client, _ = patch_notebooklm
+        await create_syllabus(client, "my-nb-id", "prompt")
+        call_args = client.chat.ask.call_args
+        assert call_args.args[0] == "my-nb-id"

@@ -102,6 +102,51 @@ flowchart LR
 
 Smaller ranges = more detailed overviews. Start small.
 
+## Automated: Syllabus Workflow
+
+Instead of manually choosing chapter ranges, let NotebookLM create a podcast syllabus that groups chapters into logical episodes.
+
+### Step 1: Generate a Syllabus
+
+```bash
+pdf-by-chapters syllabus -n NOTEBOOK_ID -o ./chapters --no-video
+```
+
+This sends a prompt to NotebookLM's chat, asking it to group your chapters into 1-2 chapter episodes by topic. The result is saved as `syllabus_state.json`.
+
+### Step 2: Generate Episodes One at a Time
+
+```bash
+# Non-blocking (returns immediately)
+pdf-by-chapters generate-next -o ./chapters --no-wait
+
+# Or blocking (waits for completion, Ctrl+C safe)
+pdf-by-chapters generate-next -o ./chapters
+```
+
+### Step 3: Check Progress
+
+```bash
+pdf-by-chapters status -o ./chapters --poll
+```
+
+Use `--tail` for a live-updating display that polls every 30 seconds.
+
+### Step 4: Repeat
+
+Run `generate-next` again for the next episode. The tool automatically picks the next pending episode from the syllabus.
+
+```mermaid
+flowchart LR
+    A[syllabus] --> B[generate-next]
+    B --> C[status --poll]
+    C --> D{All done?}
+    D -->|No| B
+    D -->|Yes| E[download]
+```
+
+> **Known behaviour:** The `syllabus` command uses NotebookLM's chat API (`chat.ask()`), which may trigger Google's backend to auto-generate artifacts (an audio overview and slide deck) as a platform side effect. These are separate from the scoped artifacts created by `generate-next` and can be safely ignored or deleted.
+
 ## ❌ Something Went Wrong?
 
 See [Troubleshooting](troubleshooting.md) for:
@@ -109,3 +154,5 @@ See [Troubleshooting](troubleshooting.md) for:
 - Generation timeout → try smaller ranges or audio-only
 - Auth errors → re-run `notebooklm login`
 - Download fails → artifact may not be ready yet
+- Syllabus parsing failed → falls back to fixed-size chunks automatically
+- Duplicate audio content → ensure `generate-next` is using scoped `source_ids`

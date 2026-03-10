@@ -2,38 +2,13 @@
 
 import asyncio
 import logging
-from dataclasses import dataclass
 from pathlib import Path
 
 from notebooklm import AudioFormat, NotebookLMClient, VideoStyle
 
+from pdf_by_chapters.models import NotebookInfo, SourceInfo, UploadResult
+
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class UploadResult:
-    """Result of uploading chapters to a notebook."""
-
-    id: str
-    title: str
-    chapters: int
-
-
-@dataclass
-class NotebookInfo:
-    """Summary of a NotebookLM notebook."""
-
-    id: str
-    title: str
-    sources_count: int
-
-
-@dataclass
-class SourceInfo:
-    """Summary of a source within a notebook."""
-
-    id: str
-    title: str
 
 
 async def upload_chapters(
@@ -276,3 +251,115 @@ async def delete_notebook(notebook_id: str) -> None:
     async with await NotebookLMClient.from_storage() as client:
         await client.notebooks.delete(notebook_id)
         logger.info("Deleted notebook %s", notebook_id)
+
+
+async def create_syllabus(
+    client: NotebookLMClient,
+    notebook_id: str,
+    prompt: str,
+) -> str:
+    """Send syllabus prompt to NotebookLM chat.
+
+    Args:
+        client: An open NotebookLM client.
+        notebook_id: The notebook ID.
+        prompt: The syllabus generation prompt.
+
+    Returns:
+        Raw AI response text.
+    """
+    result = await client.chat.ask(notebook_id, prompt)
+    return result.answer
+
+
+def _build_instructions(episode_title: str, chapter_titles: list[str] | None) -> dict[str, str]:
+    """Build scoped instructions referencing specific chapter titles."""
+    if chapter_titles:
+        ch_list = ", ".join(chapter_titles)
+        return {
+            "audio": (
+                f"Focus ONLY on these specific chapters: {ch_list}. "
+                f"Create an engaging audio deep-dive covering: {episode_title}. "
+                "Do not discuss content from other chapters."
+            ),
+            "video": (
+                f"Focus ONLY on these specific chapters: {ch_list}. "
+                f"Create a visual explainer covering: {episode_title}. "
+                "Do not discuss content from other chapters."
+            ),
+        }
+    return {
+        "audio": f"Create an engaging audio overview: {episode_title}",
+        "video": f"Create a visual explainer: {episode_title}",
+    }
+
+
+async def start_chunk_generation(
+    client: NotebookLMClient,
+    notebook_id: str,
+    source_ids: list[str],
+    episode_title: str,
+    generate_audio: bool = True,
+    generate_video: bool = True,
+    chapter_titles: list[str] | None = None,
+) -> dict[str, str]:
+    """Fire off generation requests without polling. Returns {label: task_id}.
+
+    Args:
+        client: An open NotebookLM client.
+        notebook_id: The notebook ID.
+        source_ids: Source IDs for this chunk's chapters.
+        episode_title: Title for the episode.
+        generate_audio: Whether to generate audio.
+        generate_video: Whether to generate video.
+        chapter_titles: Actual chapter titles for scoped instructions.
+
+    Returns:
+        Mapping of label ("audio"/"video") -> task_id for started tasks.
+    """
+    instructions = _build_instructions(episode_title, chapter_titles)
+    tasks: dict[str, str] = {}
+    for label, should_gen in [("audio", generate_audio), ("video", generate_video)]:
+        if not should_gen:
+            continue
+        try:
+            logger.info("Requesting %s for '%s'...", label, episode_title)
+            tasks[label] = await _request_chapter_artifact(
+                client, notebook_id, label, source_ids, instructions[label]
+            )
+        except Exception as e:
+            logger.error("Failed to request %s: %s", label, e)
+    return tasks
+
+
+async def poll_chunk_status(
+    client: NotebookLMClient,
+    notebook_id: str,
+    tasks: dict[str, str],
+) -> dict[str, str]:
+    """Single poll of artifact generation status. Returns {label: status_str}.
+
+    Args:
+        client: An open NotebookLM client.
+        notebook_id: The notebook ID.
+        tasks: Mapping of label -> task_id.
+
+    Returns:
+        Mapping of label -> status string ("completed", "failed", "in_progress", "pending").
+    """
+    results: dict[str, str] = {}
+    for label, task_id in tasks.items():
+        try:
+            status = await client.artifacts.poll_status(notebook_id, task_id)
+            if status.is_complete:
+                results[label] = "completed"
+            elif status.is_failed:
+                results[label] = "failed"
+            elif status.is_in_progress:
+                results[label] = "in_progress"
+            else:
+                results[label] = "pending"
+        except Exception as e:
+            logger.warning("Poll error for %s: %s", label, e)
+            results[label] = "unknown"
+    return results

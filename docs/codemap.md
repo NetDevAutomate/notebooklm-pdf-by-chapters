@@ -16,6 +16,8 @@ graph LR
         CLI[cli.py<br/>Typer commands]
         SPL[splitter.py<br/>PDF splitting]
         NLM[notebooklm.py<br/>API integration]
+        MOD[models.py<br/>Shared dataclasses]
+        SYL[syllabus.py<br/>State & parsing]
     end
 
     subgraph "External"
@@ -26,6 +28,7 @@ graph LR
         CHAPS[Chapter PDFs]
         AUDIO[Audio overviews]
         VIDEO[Video explainers]
+        STATE[syllabus_state.json]
     end
 
     PDF --> SPL
@@ -33,7 +36,10 @@ graph LR
     CHAPS --> NLM
     NLM --> NLMAPI
     NLMAPI --> AUDIO & VIDEO
-    CLI --> SPL & NLM
+    CLI --> SPL & NLM & SYL
+    NLM --> MOD
+    SYL --> MOD
+    SYL --> STATE
 ```
 
 ## Module Breakdown
@@ -50,6 +56,9 @@ Entry point using [Typer](https://typer.tiangolo.com/). Routes to splitter and N
 | `download` | Download generated artifacts | `notebooklm` |
 | `list` | List notebooks or sources | `notebooklm` |
 | `delete` | Delete a notebook | `notebooklm` |
+| `syllabus` | Generate podcast syllabus via chat | `notebooklm` → `syllabus` |
+| `generate-next` | Generate next pending episode | `notebooklm` → `syllabus` |
+| `status` | Show syllabus generation progress | `syllabus` (+ `notebooklm` with `--poll`) |
 
 ### splitter.py — PDF Chapter Splitting
 
@@ -114,12 +123,44 @@ sequenceDiagram
 
 **Chapter-aware generation:** Unlike `repo-artefacts` which generates for the whole repo, this tool selects specific NotebookLM sources by chapter range, allowing focused overviews of specific sections.
 
+### models.py — Shared Dataclasses
+
+Holds dataclasses shared between modules, preventing circular imports and keeping `syllabus.py` testable without `notebooklm-py` installed.
+
+- `UploadResult`, `NotebookInfo`, `SourceInfo` — API result types
+- `ChunkResult` — per-artifact-type generation result
+
+### syllabus.py — Syllabus State & Parsing
+
+Pure logic module (no Rich, no Typer, no async). Follows the `splitter.py` pattern.
+
+- `ChunkStatus(StrEnum)` — 4-state machine: `PENDING → GENERATING → COMPLETED | FAILED`
+- `SyllabusState`, `SyllabusChunk`, `ChunkArtifact` — state file dataclasses
+- `build_prompt()` — constructs the syllabus generation prompt with numbered source titles
+- `parse_syllabus_response()` — regex parsing of LLM response into episodes (binary success/fallback)
+- `build_fixed_size_chunks()` — deterministic fallback when LLM parsing fails
+- `map_sources_to_chapters()` — maps chapter numbers to source IDs via title regex
+- `read_state()` / `write_state()` — atomic JSON state persistence with `fsync` + `os.replace()`
+- `get_next_chunk()` — priority selection: GENERATING (resume) > FAILED (retry) > PENDING (new)
+
+```mermaid
+stateDiagram-v2
+    [*] --> PENDING
+    PENDING --> GENERATING: generate-next
+    GENERATING --> COMPLETED: poll detects completion
+    GENERATING --> FAILED: poll detects failure / timeout
+    FAILED --> GENERATING: generate-next (retry)
+    COMPLETED --> PENDING: --episode N (regenerate)
+```
+
 ## Interfaces
 
 | Module | Exports | Used By |
 |--------|---------|---------|
-| `splitter` | `split_pdf_by_chapters()`, `sanitize_filename()` | `cli.split`, `cli.process` |
-| `notebooklm` | `upload_chapters()`, `generate_for_chapters()`, `download_artifacts()`, `list_notebooks()`, `list_sources()`, `delete_notebook()` | `cli.*` |
+| `models` | `UploadResult`, `NotebookInfo`, `SourceInfo`, `ChunkResult` | `notebooklm`, `cli` |
+| `splitter` | `split_pdf_by_chapters()`, `sanitize_filename()` | `cli.split`, `cli.process`, `notebooklm` |
+| `notebooklm` | `upload_chapters()`, `generate_for_chapters()`, `download_artifacts()`, `list_notebooks()`, `list_sources()`, `delete_notebook()`, `create_syllabus()`, `start_chunk_generation()`, `poll_chunk_status()`, `generate_chunk()` | `cli.*` |
+| `syllabus` | `SyllabusState`, `SyllabusChunk`, `ChunkStatus`, `build_prompt()`, `parse_syllabus_response()`, `read_state()`, `write_state()`, `get_next_chunk()` | `cli.syllabus`, `cli.generate_next`, `cli.status` |
 
 ## Dependencies
 
@@ -127,6 +168,9 @@ sequenceDiagram
 graph BT
     CLI[cli.py] --> SPL[splitter.py]
     CLI --> NLM[notebooklm.py]
+    CLI --> SYL[syllabus.py]
+    NLM --> MOD[models.py]
+    SYL --> MOD
 
     SPL -.-> PYMUPDF[pymupdf]
     NLM -.-> NLMPY[notebooklm-py]
