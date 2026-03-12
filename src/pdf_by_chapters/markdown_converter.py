@@ -217,7 +217,7 @@ def convert_directory(
 
     pdfs: list[Path] = []
     for i, md_path in enumerate(md_files, 1):
-        stem = md_path.stem.lower().replace(" ", "_")
+        stem = re.sub(r"-{2,}", "-", md_path.stem.lower().replace(" ", "_"))
         pdf_name = f"{i:02d}-{stem}.pdf"
         pdf_path = pdf_dir / pdf_name
 
