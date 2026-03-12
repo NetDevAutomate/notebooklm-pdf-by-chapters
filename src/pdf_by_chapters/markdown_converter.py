@@ -50,12 +50,50 @@ def preprocess_markdown(content: str) -> str:
     return content
 
 
+# Matches unquoted node labels containing / (file paths), e.g. C[/home/user]
+# but NOT already-quoted labels like C["some text"]
+_UNQUOTED_PATH_NODE_RE = re.compile(r'\[(/[^\]"]+)\]')
+
+# Matches <br/> or <br> in text (not valid in all mermaid contexts)
+_HTML_BR_RE = re.compile(r"<br\s*/?>")
+
+
+def _sanitize_mermaid(code: str) -> str:
+    """Fix common mermaid syntax issues that cause parser failures.
+
+    Fixes:
+    - Unquoted node labels containing / (file paths) → wraps in quotes
+    - <br/> tags in state diagram notes → replaced with newline character
+    """
+    # Wrap unquoted path-like node labels in quotes: [/home/user] → ["/home/user"]
+    code = _UNQUOTED_PATH_NODE_RE.sub(lambda m: f'["{m.group(1)}"]', code)
+
+    # Replace <br/> with space — special separators (|, /, \n) break state diagram notes
+    code = _HTML_BR_RE.sub(" ", code)
+
+    # In state diagram notes, colons after the initial "note ... :" break the parser.
+    # Strip extra colons from note body text.
+    def _fix_note_colons(m: re.Match) -> str:
+        prefix = m.group(1)  # "note right of X: "
+        body = m.group(2)
+        return prefix + body.replace(":", " -")
+
+    code = re.sub(
+        r"(note\s+(?:right|left)\s+of\s+\w+\s*:\s*)(.*)",
+        _fix_note_colons,
+        code,
+    )
+
+    return code
+
+
 def _render_mermaid_to_png(mermaid_code: str, output_dir: Path, index: int) -> Path | None:
     """Render a mermaid diagram to PNG using mmdc.
 
     Uses PNG (not SVG) because SVG foreignObject elements lose text
     when converted to PDF by pandoc/typst.
     """
+    mermaid_code = _sanitize_mermaid(mermaid_code)
     png_path = output_dir / f"mermaid_{index:03d}.png"
 
     with tempfile.NamedTemporaryFile(
