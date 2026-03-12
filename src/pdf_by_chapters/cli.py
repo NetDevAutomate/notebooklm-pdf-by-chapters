@@ -957,7 +957,9 @@ def from_obsidian(
         raise typer.Exit(1)
 
     resolved_output = (output_dir or source_dir).expanduser().resolve()
-    name = notebook_name or resolved_source.name.replace("-", " ").replace("_", " ").title()
+    # Use parent directory name when --subdir is used (the course name, not "study-notes")
+    name_source = source_dir.expanduser().resolve().name if subdir else resolved_source.name
+    name = notebook_name or name_source.replace("-", " ").replace("_", " ").title()
 
     console.print(f"[bold]Notebook:[/bold] {name}")
     console.print(f"[bold]Source:[/bold] {resolved_source}")
@@ -1000,12 +1002,24 @@ def from_obsidian(
                     nb_title = nb.title
                     console.print(f"  Created notebook: {nb_title}")
 
+            # Check existing sources to avoid duplicates
+            existing_sources = await client.sources.list(nb_id)
+            existing_titles = {s.title for s in existing_sources}
+
+            uploaded = 0
             for pdf_path in pdfs:
+                if pdf_path.name in existing_titles:
+                    console.print(f"  [dim]Skipped (already exists): {pdf_path.name}[/dim]")
+                    continue
                 await client.sources.add_file(nb_id, pdf_path)
                 console.print(f"  Uploaded {pdf_path.name}")
+                uploaded += 1
                 import asyncio as _asyncio
 
                 await _asyncio.sleep(2)
+
+            if uploaded == 0:
+                console.print("  [dim]All sources already uploaded.[/dim]")
 
             return nb_id, nb_title
 
