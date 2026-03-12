@@ -50,9 +50,13 @@ def preprocess_markdown(content: str) -> str:
     return content
 
 
-def _render_mermaid_to_svg(mermaid_code: str, output_dir: Path, index: int) -> Path | None:
-    """Render a mermaid diagram to SVG using mmdc."""
-    svg_path = output_dir / f"mermaid_{index:03d}.svg"
+def _render_mermaid_to_png(mermaid_code: str, output_dir: Path, index: int) -> Path | None:
+    """Render a mermaid diagram to PNG using mmdc.
+
+    Uses PNG (not SVG) because SVG foreignObject elements lose text
+    when converted to PDF by pandoc/typst.
+    """
+    png_path = output_dir / f"mermaid_{index:03d}.png"
 
     with tempfile.NamedTemporaryFile(
         mode="w", suffix=".mmd", dir=str(output_dir), delete=False
@@ -62,15 +66,15 @@ def _render_mermaid_to_svg(mermaid_code: str, output_dir: Path, index: int) -> P
 
     try:
         result = subprocess.run(
-            ["mmdc", "-i", mmd_path, "-o", str(svg_path), "-b", "transparent"],
+            ["mmdc", "-i", mmd_path, "-o", str(png_path), "-b", "white", "-s", "2"],
             capture_output=True,
             text=True,
             timeout=30,
         )
-        if result.returncode != 0 or not svg_path.exists():
+        if result.returncode != 0 or not png_path.exists():
             logger.warning("mmdc failed for diagram %d: %s", index, result.stderr[:200])
             return None
-        return svg_path
+        return png_path
     except subprocess.TimeoutExpired:
         logger.warning("mmdc timed out for diagram %d", index)
         return None
@@ -95,9 +99,9 @@ def prerender_mermaid_diagrams(content: str, work_dir: Path) -> str:
         nonlocal counter
         counter += 1
         mermaid_code = match.group(1)
-        svg_path = _render_mermaid_to_svg(mermaid_code, work_dir, counter)
-        if svg_path:
-            return f"![Diagram {counter}]({svg_path})"
+        png_path = _render_mermaid_to_png(mermaid_code, work_dir, counter)
+        if png_path:
+            return f"![Diagram {counter}]({png_path})"
         return f"```\n{mermaid_code}```"
 
     result = _MERMAID_BLOCK_RE.sub(_replace, content)
