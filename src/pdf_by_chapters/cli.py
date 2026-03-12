@@ -903,3 +903,186 @@ def status(
         return
 
     console.print(_build_status_table(state))
+
+
+# ---------------------------------------------------------------------------
+# Obsidian workflow commands
+# ---------------------------------------------------------------------------
+
+
+@app.command("from-obsidian", rich_help_panel="Obsidian")
+def from_obsidian(
+    source_dir: Path = typer.Argument(..., help="Directory containing .md files."),
+    output_dir: Path | None = typer.Option(
+        None, "--output-dir", "-o", help="Output directory. Defaults to source directory."
+    ),
+    notebook_name: str | None = typer.Option(
+        None, "--name", help="Notebook name. Defaults to directory name in Title Case."
+    ),
+    notebook_id: str | None = typer.Option(
+        None,
+        "--notebook-id",
+        "-n",
+        envvar="NOTEBOOK_ID",
+        help="Use existing notebook instead of creating one.",
+    ),
+    no_generate: bool = typer.Option(
+        False, "--no-generate", help="Upload only, skip artifact generation."
+    ),
+    no_download: bool = typer.Option(
+        False, "--no-download", help="Generate but don't download artifacts."
+    ),
+    subdir: str | None = typer.Option(
+        None, "--subdir", "-s", help="Subdirectory within source (e.g. 'study-notes')."
+    ),
+) -> None:
+    """Convert Obsidian markdown to PDFs, upload to NotebookLM, and generate audio.
+
+    Renders mermaid diagrams and code blocks properly in PDFs using pandoc.
+    Requires: pandoc (brew install pandoc) and @mermaid-js/mermaid-cli
+    (npm install -g @mermaid-js/mermaid-cli).
+    """
+    from notebooklm import NotebookLMClient
+
+    from pdf_by_chapters.markdown_converter import ConversionError, convert_directory
+    from pdf_by_chapters.splitter import sanitize_filename
+
+    # Resolve paths
+    resolved_source = source_dir.expanduser().resolve()
+    if subdir:
+        resolved_source = resolved_source / subdir
+
+    if not resolved_source.is_dir():
+        console.print(f"[red]Directory not found: {resolved_source}[/red]")
+        raise typer.Exit(1)
+
+    resolved_output = (output_dir or source_dir).expanduser().resolve()
+    name = notebook_name or resolved_source.name.replace("-", " ").replace("_", " ").title()
+
+    console.print(f"[bold]Notebook:[/bold] {name}")
+    console.print(f"[bold]Source:[/bold] {resolved_source}")
+    console.print(f"[bold]Output:[/bold] {resolved_output}")
+    console.print()
+
+    # Step 1: Convert markdown to PDFs
+    console.print("[bold]Step 1:[/bold] Converting markdown to PDF...")
+    try:
+        pdfs = convert_directory(resolved_source, resolved_output)
+    except (ConversionError, ValueError) as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from None
+
+    if not pdfs:
+        console.print("[red]No PDFs generated. Check conversion errors above.[/red]")
+        raise typer.Exit(1)
+
+    console.print(f"[green]Converted {len(pdfs)} files to PDF.[/green]\n")
+
+    # Step 2: Create notebook and upload
+    console.print("[bold]Step 2:[/bold] Uploading to NotebookLM...")
+
+    async def _upload() -> tuple[str, str]:
+        async with await NotebookLMClient.from_storage() as client:
+            if notebook_id:
+                nb_id = notebook_id
+                nb_title = name
+            else:
+                # Check for existing notebook with same name
+                notebooks = await client.notebooks.list()
+                existing = next((nb for nb in notebooks if nb.title == name), None)
+                if existing:
+                    nb_id = existing.id
+                    nb_title = existing.title
+                    console.print(f"  Found existing notebook: {nb_title}")
+                else:
+                    nb = await client.notebooks.create(name)
+                    nb_id = nb.id
+                    nb_title = nb.title
+                    console.print(f"  Created notebook: {nb_title}")
+
+            for pdf_path in pdfs:
+                await client.sources.add_file(nb_id, pdf_path)
+                console.print(f"  Uploaded {pdf_path.name}")
+                import asyncio as _asyncio
+
+                await _asyncio.sleep(2)
+
+            return nb_id, nb_title
+
+    nb_id, nb_title = asyncio.run(_upload())
+    console.print(f"[green]Uploaded {len(pdfs)} sources to '{nb_title}'.[/green]")
+    console.print(f"  Notebook ID: [cyan]{nb_id}[/cyan]\n")
+
+    if no_generate:
+        console.print("Skipping generation (--no-generate).")
+        console.print(f"\nexport NOTEBOOK_ID={nb_id}")
+        return
+
+    # Step 3: Generate audio for each source
+    console.print("[bold]Step 3:[/bold] Generating audio overviews...")
+
+    async def _generate_and_download() -> None:
+        async with await NotebookLMClient.from_storage() as client:
+            sources = await client.sources.list(nb_id)
+            sources.sort(key=lambda s: s.title or "")
+
+            downloads_dir = resolved_output / "downloads"
+            downloads_dir.mkdir(parents=True, exist_ok=True)
+
+            for i, source in enumerate(sources, 1):
+                src_title = source.title or f"source-{i}"
+                console.print(f"\n  [{i}/{len(sources)}] Generating audio for: {src_title}")
+
+                try:
+                    status = await client.artifacts.generate_audio(
+                        nb_id,
+                        source_ids=[source.id],
+                        instructions=f"Create an engaging audio deep-dive for: {src_title}",
+                    )
+
+                    if status.is_failed or not status.task_id:
+                        console.print(
+                            f"  [yellow]Generation rejected: "
+                            f"{status.error or 'unknown error'}[/yellow]"
+                        )
+                        continue
+
+                    console.print("  Waiting for completion...")
+                    await client.artifacts.wait_for_completion(
+                        nb_id, status.task_id, timeout=900.0
+                    )
+                    console.print("  [green]Audio ready.[/green]")
+
+                    # Rename artifact with Title Case
+                    import contextlib
+
+                    safe_name = sanitize_filename(src_title)
+                    display_name = src_title.replace("-", " ").replace("_", " ").title()
+                    with contextlib.suppress(Exception):
+                        await client.artifacts.rename(nb_id, status.task_id, display_name)
+
+                    # Download
+                    if not no_download:
+                        filename = f"{i:02d}-{safe_name}.mp3"
+                        dl_path = downloads_dir / filename
+                        await client.artifacts.download_audio(
+                            nb_id, str(dl_path), artifact_id=status.task_id
+                        )
+                        console.print(f"  Downloaded: {dl_path.name}")
+
+                except TimeoutError:
+                    console.print(f"  [yellow]Timed out for {src_title}[/yellow]")
+                except Exception as exc:
+                    console.print(f"  [yellow]Error: {exc}[/yellow]")
+
+                # Gap between generations
+                if i < len(sources):
+                    import time
+
+                    console.print("  [dim]Waiting 30s before next...[/dim]")
+                    time.sleep(30)
+
+    asyncio.run(_generate_and_download())
+
+    console.print(f"\n[green]Done! Notebook: {nb_title} ({nb_id})[/green]")
+    console.print(f"export NOTEBOOK_ID={nb_id}")
