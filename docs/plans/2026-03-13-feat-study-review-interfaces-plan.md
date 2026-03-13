@@ -3,28 +3,44 @@ title: "feat: Interactive Study Review Interfaces"
 type: feat
 status: planned
 date: 2026-03-13
+updated: 2026-03-13
 ---
 
 # feat: Interactive Study Review Interfaces
 
 ## Overview
 
-Two complementary interfaces for reviewing NotebookLM-generated flashcards, quizzes, and audio: a Textual TUI tab in studyctl for terminal-based desk study, and a local web app for rich mobile-friendly review with audio playback.
+Progressive build path from CLI → TUI → PWA → native apps for reviewing NotebookLM-generated flashcards, quizzes, and audio. Each phase adds capability while validating UX patterns before investing in the next layer.
 
 ## Problem Statement
 
 The `pdf-by-chapters review` CLI command provides basic interactive review, but:
 - No persistent progress tracking across sessions
 - No audio playback integration
+- No voice output (study-speak) integration
 - No Markdown/diagram rendering in card content
 - No mobile access for commute study
-- No visual progress indicators
+- No spaced repetition for wrong answers
+- No offline access when away from home network
+- No way to review only mistakes
+
+## Build Path
+
+```
+Phase 1: Textual TUI          → Desk study, keyboard-driven
+Phase 2: Local Web App (PWA)   → Mobile study, audio, offline
+Phase 3: Native iOS + macOS    → App Store, push notifications, AWS sync
+```
+
+Each phase validates UX before the next. Don't build native until PWA proves the patterns.
+
+---
 
 ## Phase 1: Textual TUI — StudyCards Tab
 
 ### What
 
-Add a `StudyCards` tab to the existing `studyctl tui` Textual app that loads flashcard and quiz JSON from a configurable directory and presents them with keyboard-driven interaction.
+Add a `StudyCards` tab to the existing `studyctl tui` Textual app with keyboard-driven flashcard/quiz review, voice toggle, and spaced repetition tracking.
 
 ### Architecture
 
@@ -33,259 +49,438 @@ studyctl tui
 ├── Overview tab (existing)
 ├── Sessions tab (existing)
 └── StudyCards tab (NEW)
-    ├── Course selector (dropdown of discovered directories)
-    ├── Mode toggle: Flashcards | Quiz | Mixed
+    ├── Course selector (dropdown — discovers all configured directories)
+    ├── Mode toggle: Flashcards | Quiz | Mixed | Wrong Answers
     ├── Card display panel (front → flip → back)
     ├── Score buttons: Know / Don't Know / Skip
     ├── Progress bar (N/total, % correct)
+    ├── Voice toggle (v key — reads question/answer via study-speak)
     └── Session summary on completion
 ```
 
-### Implementation
+### Key Bindings
 
-**File:** `packages/studyctl/src/studyctl/tui/study_cards.py`
+| Key | Action |
+|-----|--------|
+| Space | Flip card (flashcard) / Submit answer (quiz) |
+| y | Mark correct |
+| n | Mark incorrect |
+| s | Skip |
+| h | Show hint (quiz only) |
+| v | Toggle voice on/off |
+| r | Review wrong answers from this session |
+| q | Quit with summary |
+
+### Voice Integration
 
 ```python
-from textual.widgets import Static, Button, ProgressBar
-from textual.containers import Horizontal, Vertical
-from textual.screen import Screen
+# Toggle voice in TUI
+async def action_toggle_voice(self) -> None:
+    self.voice_enabled = not self.voice_enabled
+    if self.voice_enabled:
+        # Import speak function from agent-session-tools
+        from agent_session_tools.speak import _speak_kokoro, _get_tts_config
+        cfg = _get_tts_config()
+        self._voice = cfg.get("voice", "am_michael")
+        self._speed = cfg.get("speed", 1.0)
 
-from pdf_by_chapters.review import (
-    load_flashcards, load_quizzes, discover_content,
-    Flashcard, QuizQuestion, ReviewResult
-)
-
-class StudyCardsTab(Static):
-    """Interactive flashcard and quiz review tab."""
-
-    BINDINGS = [
-        ("space", "flip", "Flip card"),
-        ("y", "mark_correct", "Correct"),
-        ("n", "mark_incorrect", "Incorrect"),
-        ("s", "skip", "Skip"),
-        ("h", "hint", "Hint (quiz)"),
-    ]
+# Speak current card when voice is on
+async def _speak_card(self, text: str) -> None:
+    if self.voice_enabled:
+        import asyncio
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(
+            None, _speak_kokoro, text,
+            {"voice": self._voice, "speed": self._speed}
+        )
 ```
 
-**Key widgets:**
-- `CardPanel` — displays front/back with flip animation (CSS transition)
-- `ScoreBar` — horizontal buttons: Know (green), Don't Know (red), Skip (dim)
-- `ProgressIndicator` — fraction + progress bar + current score %
-- `CoursePicker` — dropdown listing discovered download directories
+Voice is **optional** — works without kokoro installed, gracefully degrades to no voice.
 
-**Data flow:**
-1. User selects course directory (or configured default)
-2. `discover_content()` finds flashcard/quiz subdirs
-3. Cards loaded and shuffled via `pdf_by_chapters.review`
-4. Each card displayed → user scores → next card
-5. Summary shown at end
-6. Results written to sessions.db via `tutor-checkpoint`
+### Spaced Repetition Tracking
 
-**Config integration:**
+Per-card results stored in sessions.db for SM-2 scheduling:
+
+```sql
+CREATE TABLE IF NOT EXISTS card_reviews (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    course TEXT NOT NULL,
+    card_type TEXT NOT NULL,      -- 'flashcard' or 'quiz'
+    card_hash TEXT NOT NULL,      -- SHA256 of question text (stable ID)
+    correct BOOLEAN NOT NULL,
+    reviewed_at TEXT NOT NULL,    -- ISO 8601
+    ease_factor REAL DEFAULT 2.5, -- SM-2 ease factor
+    interval_days INTEGER DEFAULT 1,
+    next_review TEXT              -- ISO 8601 date
+);
+
+CREATE INDEX IF NOT EXISTS idx_card_reviews_next ON card_reviews(course, next_review);
+```
+
+### Wrong Answers Review Mode
+
+After completing a session, press `r` to review only cards you got wrong. Also available as:
+```bash
+pdf-by-chapters review ~/Desktop/ZTM-DE/downloads --retry-wrong
+```
+
+The `--retry-wrong` flag loads the last session's wrong answers from card_reviews.
+
+### Multiple Download Directories
+
 ```yaml
 # ~/.config/studyctl/config.yaml
 review:
-  downloads_dir: ~/Desktop/ZTM-DE/downloads
-  default_mode: flashcards  # flashcards | quiz | mixed
+  directories:
+    - ~/Desktop/ZTM-DE/downloads
+    - ~/Desktop/Python-Course/downloads
+    - ~/Obsidian/Personal/2-Areas/Courses
+  default_mode: flashcards
   shuffle: true
+  voice_enabled: false
+```
+
+Course selector auto-discovers all directories. New directories appear automatically.
+
+### Cross-Package Dependency Solution
+
+**Don't import `pdf_by_chapters.review` from studyctl.** Instead, copy the data loading code (~60 lines of dataclasses + JSON parsing) into `studyctl/review_loader.py`. Zero coupling between packages. The JSON format is the contract, not the Python code.
+
+```python
+# packages/studyctl/src/studyctl/review_loader.py
+# Self-contained flashcard/quiz loader — no cross-package imports
+# Reads the same JSON format as pdf_by_chapters generates
 ```
 
 ### Dependencies
 
-- `textual` (already an optional dep in studyctl)
-- `pdf_by_chapters.review` (cross-package import — needs to be installed)
+- `textual` (already optional dep in studyctl)
+- `study-speak` for voice (optional — graceful fallback to no voice)
 
 ### Acceptance Criteria
 
 - [ ] StudyCards tab appears in `studyctl tui`
-- [ ] Course directory auto-discovered from config
-- [ ] Flashcard mode: front → space to flip → y/n/s to score
+- [ ] Multiple course directories auto-discovered from config
+- [ ] Flashcard mode: space to flip → y/n/s to score
 - [ ] Quiz mode: a/b/c/d selection, hint support, rationale display
+- [ ] Voice toggle (v key) reads cards aloud via kokoro
 - [ ] Progress bar updates after each card
-- [ ] Session summary with score and grade
-- [ ] Keyboard-only navigation (no mouse required)
-- [ ] Ctrl+C exits cleanly without data loss
+- [ ] Per-card results saved to card_reviews table
+- [ ] Wrong answers review mode (r key / --retry-wrong)
+- [ ] Session summary with score, grade, and "due for review" count
+- [ ] Keyboard-only navigation
+- [ ] Graceful fallback when kokoro not installed
 
 ---
 
-## Phase 2: Local Web App — `studyctl serve`
+## Phase 2: Local Web App (PWA) — `studyctl serve`
 
 ### What
 
-A local web server serving flashcards, quizzes, and audio from the downloads directory. Mobile-friendly, rich content rendering, audio playback.
+A local web server + Progressive Web App for mobile study with offline capability, audio playback, and voice output. Installable on iPhone/iPad home screen.
+
+### What is a PWA?
+
+A **Progressive Web App** is a website that can be installed on your phone's home screen like a native app. It:
+- Works offline (caches data via Service Worker)
+- Has its own app icon and splash screen
+- Runs full-screen (no browser chrome)
+- Can send push notifications (optional)
+- No App Store submission required
+
+Your `studyctl serve` + a `manifest.json` + a service worker = a study app on your phone.
 
 ### Architecture
 
 ```
 studyctl serve [--port 8080] [--dir ~/Desktop/ZTM-DE/downloads]
      │
-     ├── GET /                      → Dashboard: courses, progress, quick stats
-     ├── GET /course/:name          → Course overview: sections, progress per section
+     ├── GET /                      → Dashboard: courses, progress, due reviews
+     ├── GET /course/:name          → Course overview: sections, progress
      ├── GET /flashcards/:name      → Swipeable card UI (front/back flip)
      ├── GET /quiz/:name            → Multiple choice with instant feedback
      ├── GET /audio/:name           → Audio player with episode list
-     ├── POST /api/score            → Record score for a card/question
-     ├── GET /api/progress/:name    → Progress data for a course
-     └── Static: /audio/*.mp3       → Served directly from downloads/audio/
+     ├── GET /wrong/:name           → Review wrong answers only
+     ├── POST /api/score            → Record per-card score
+     ├── GET /api/progress/:name    → Progress + spaced repetition data
+     ├── POST /api/speak            → TTS via study-speak (optional)
+     ├── Static: /audio/*.mp3       → Served from downloads/audio/
+     ├── GET /manifest.json         → PWA manifest
+     └── GET /sw.js                 → Service worker for offline
 ```
 
 ### Tech Stack
 
 | Component | Choice | Rationale |
 |---|---|---|
-| Server | FastAPI | Already in Python ecosystem, async, lightweight |
-| Templates | Jinja2 | Server-rendered, no JS build step |
+| Server | FastAPI | Python ecosystem, async, lightweight |
+| Templates | Jinja2 | Server-rendered, no build step |
 | Interactivity | HTMX | Minimal JS, server-driven updates |
-| CSS | Pico CSS | Classless, responsive, dark mode, tiny |
+| CSS | Pico CSS | Classless, responsive, dark mode |
 | Audio | Native `<audio>` | No JS library needed |
-| Storage | sessions.db | Reuse existing SQLite infrastructure |
+| Voice | `/api/speak` endpoint | Calls study-speak on server, streams audio back |
+| Offline | Service Worker | Caches cards/quizzes for offline use |
+| Storage | sessions.db | Reuse existing SQLite + card_reviews table |
 
-### Key Design Decisions
+### PWA Manifest
 
-1. **No React/Vue/build step.** HTMX + Jinja2 is enough. Cards flip via CSS transitions, quiz answers submit via HTMX POST, audio plays natively.
-
-2. **Serve from existing downloads directory.** No copying or importing — point `studyctl serve` at any downloads dir and it discovers content.
-
-3. **Mobile-first responsive layout.** Pico CSS handles this. Cards are full-width on mobile, grid on desktop.
-
-4. **Audio integration.** Each course page has an embedded player for its audio files. Can listen while reviewing flashcards.
-
-5. **Progress persisted to sessions.db.** Each review session creates a record with score, duration, cards reviewed. Feeds into spaced repetition.
-
-### Page Designs
-
-#### Dashboard (`/`)
-```
-┌────────────────────────────────────┐
-│ Study Review                       │
-├────────────────────────────────────┤
-│ ┌──────────┐ ┌──────────┐         │
-│ │ ZTM-DE   │ │ Python   │  ...    │
-│ │ 8 cards  │ │ 12 cards │         │
-│ │ 75% done │ │ new      │         │
-│ └──────────┘ └──────────┘         │
-├────────────────────────────────────┤
-│ Recent: ZTM-DE quiz — 8/10 (80%)  │
-│ Due for review: Python flashcards  │
-└────────────────────────────────────┘
+```json
+{
+  "name": "Study Review",
+  "short_name": "StudyReview",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0d1117",
+  "theme_color": "#58a6ff",
+  "icons": [
+    {"src": "/icon-192.png", "sizes": "192x192", "type": "image/png"},
+    {"src": "/icon-512.png", "sizes": "512x512", "type": "image/png"}
+  ]
+}
 ```
 
-#### Flashcard (`/flashcards/:name`)
-```
-┌────────────────────────────────────┐
-│ Card 3/24          ZTM-DE          │
-├────────────────────────────────────┤
-│                                    │
-│  What is a data pipeline?          │
-│                                    │
-│  ┌──────────────────────────────┐  │
-│  │     [ Tap to reveal ]        │  │
-│  └──────────────────────────────┘  │
-│                                    │
-│  [Know]  [Don't Know]  [Skip]      │
-├────────────────────────────────────┤
-│ ████████░░░░░░░░░░░  3/24  75%     │
-└────────────────────────────────────┘
+### Service Worker (Offline Strategy)
+
+```javascript
+// sw.js — cache flashcard/quiz JSON for offline study
+const CACHE_NAME = 'study-review-v1';
+
+self.addEventListener('fetch', event => {
+  // Cache API responses for cards and quizzes
+  if (event.request.url.includes('/api/')) {
+    event.respondWith(
+      caches.open(CACHE_NAME).then(cache =>
+        fetch(event.request)
+          .then(response => {
+            cache.put(event.request, response.clone());
+            return response;
+          })
+          .catch(() => cache.match(event.request))
+      )
+    );
+  }
+});
 ```
 
-#### Quiz (`/quiz/:name`)
-```
-┌────────────────────────────────────┐
-│ Question 2/10      ZTM-DE          │
-├────────────────────────────────────┤
-│                                    │
-│  Which term best describes the     │
-│  core value proposition of data    │
-│  engineering?                      │
-│                                    │
-│  ○ a) Generation of raw data       │
-│  ○ b) Statistical models           │
-│  ● c) Transforming raw data into   │
-│       structured assets            │
-│  ○ d) Manual log inspection        │
-│                                    │
-│  [Hint]  [Submit]  [Skip]          │
-├────────────────────────────────────┤
-│  ✓ Correct!                        │
-│  Data engineering acts as the      │
-│  refinement layer...               │
-└────────────────────────────────────┘
-```
+**Offline flow:** First load caches all card data. Subsequent loads work without network. Scores queue locally and sync when online.
 
-### File Structure
+### Voice in Web App
 
-```
-packages/studyctl/src/studyctl/
-├── serve.py              # FastAPI app + routes
-├── templates/
-│   ├── base.html         # Layout with nav + Pico CSS
-│   ├── dashboard.html    # Course listing
-│   ├── flashcards.html   # Card review UI
-│   ├── quiz.html         # Quiz UI
-│   └── audio.html        # Audio player
-└── cli.py                # Add 'serve' command
+Two options (configurable):
+
+1. **Server-side TTS** — `POST /api/speak` sends text to server, server runs study-speak, streams WAV/MP3 back. Works with kokoro quality but requires server connection.
+
+2. **Browser SpeechSynthesis** — `speechSynthesis.speak(new SpeechSynthesisUtterance(text))`. Works offline, lower quality, no kokoro voices. Good fallback.
+
+```javascript
+// Voice toggle in web UI
+function speakText(text) {
+  if (voiceMode === 'server') {
+    fetch('/api/speak', {method: 'POST', body: JSON.stringify({text})})
+      .then(r => r.blob())
+      .then(b => new Audio(URL.createObjectURL(b)).play());
+  } else if (voiceMode === 'browser') {
+    speechSynthesis.speak(new SpeechSynthesisUtterance(text));
+  }
+}
 ```
 
-### Dependencies
+### Spaced Repetition Dashboard
 
-New optional dependency group in studyctl:
-```toml
-[project.optional-dependencies]
-serve = [
-    "fastapi>=0.115",
-    "uvicorn>=0.34",
-    "jinja2>=3.1",
-]
+The dashboard shows:
+- **Due today:** Cards where `next_review <= today` (orange highlight)
+- **Overdue:** Cards past their review date (red)
+- **Mastered:** Cards with interval > 30 days (green)
+- **New:** Cards never reviewed
+
+### Progress Schema
+
+```sql
+-- Per-card tracking for spaced repetition
+CREATE TABLE IF NOT EXISTS card_reviews (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    course TEXT NOT NULL,
+    card_type TEXT NOT NULL,
+    card_hash TEXT NOT NULL,
+    correct BOOLEAN NOT NULL,
+    reviewed_at TEXT NOT NULL,
+    ease_factor REAL DEFAULT 2.5,
+    interval_days INTEGER DEFAULT 1,
+    next_review TEXT,
+    response_time_ms INTEGER  -- how long they took to answer
+);
+
+-- Session-level summaries
+CREATE TABLE IF NOT EXISTS review_sessions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    course TEXT NOT NULL,
+    mode TEXT NOT NULL,          -- 'flashcards', 'quiz', 'wrong_answers'
+    total INTEGER NOT NULL,
+    correct INTEGER NOT NULL,
+    duration_seconds INTEGER,
+    started_at TEXT NOT NULL,
+    finished_at TEXT
+);
 ```
 
 ### API Endpoints
 
 ```python
-# Score recording
+# Per-card score recording
 POST /api/score
 {
     "course": "ZTM-DE",
-    "type": "flashcard",  # or "quiz"
-    "card_index": 3,
+    "card_type": "flashcard",
+    "card_hash": "abc123...",
     "correct": true,
-    "duration_seconds": 12
+    "response_time_ms": 3400
 }
 
-# Progress retrieval
+# Course progress with spaced repetition
 GET /api/progress/ZTM-DE
 {
-    "flashcards": {"total": 48, "reviewed": 24, "correct": 20},
-    "quizzes": {"total": 80, "reviewed": 40, "correct": 32},
-    "last_reviewed": "2026-03-13T14:30:00Z"
+    "flashcards": {"total": 48, "reviewed": 24, "correct": 20, "due_today": 8},
+    "quizzes": {"total": 80, "reviewed": 40, "correct": 32, "due_today": 3},
+    "last_reviewed": "2026-03-13T14:30:00Z",
+    "mastered": 15,
+    "struggling": 5
+}
+
+# Wrong answers for retry
+GET /api/wrong/ZTM-DE?type=flashcard
+{
+    "cards": [...],  // cards where last review was incorrect
+    "count": 5
 }
 ```
 
 ### Acceptance Criteria
 
-- [ ] `studyctl serve` starts a local web server
-- [ ] Dashboard lists discovered courses with progress
-- [ ] Flashcard page: tap/click to flip, score buttons work
+- [ ] `studyctl serve` starts local web server
+- [ ] Dashboard lists courses with progress + due reviews
+- [ ] Flashcard page: tap to flip, swipe/button to score
 - [ ] Quiz page: select answer, submit, see rationale
-- [ ] Audio page: play/pause episodes, show titles
+- [ ] Audio page: play/pause episodes
+- [ ] Wrong answers mode: review only mistakes
+- [ ] Voice toggle: server TTS or browser SpeechSynthesis
+- [ ] PWA installable on iPhone home screen
+- [ ] Offline mode: cached cards work without network
+- [ ] Scores persisted to card_reviews table
+- [ ] Spaced repetition: due/overdue/mastered tracking
 - [ ] Mobile responsive (tested on iPhone Safari)
-- [ ] Scores persisted to sessions.db
-- [ ] Works over local network (access from phone on same wifi)
-- [ ] `--dir` flag to point at any downloads directory
-- [ ] `--port` flag (default 8080)
+- [ ] Works over local network
+- [ ] `--dir` and `--port` flags
+
+---
+
+## Phase 3: Native Apps + Cloud Sync (Future)
+
+### Why Wait
+
+PWA validates the UX first. Native apps are 10x the effort. Build native only when:
+1. PWA proves the study patterns work
+2. You need push notifications for review reminders
+3. You want App Store distribution
+4. You need Apple Watch complication for due-card count
+
+### iOS App (SwiftUI)
+
+```
+StudyReview.app
+├── Dashboard       → Course list, due counts, streaks
+├── Flashcards      → Card flip with haptic feedback
+├── Quiz            → Multiple choice with animations
+├── Audio Player    → Background audio, lock screen controls
+├── Progress        → Charts, mastery tracking, streak calendar
+└── Settings        → Voice, sync, notifications
+```
+
+**Tech:** SwiftUI + Swift Data (local) + AWS sync (cloud). Universal app (iPhone + iPad + Mac Catalyst).
+
+**Key native advantages over PWA:**
+- Push notifications ("5 cards due for review")
+- Apple Watch complication (due count)
+- Background audio with lock screen controls
+- Haptic feedback on correct/incorrect
+- Widget for home screen (next card preview)
+- Siri Shortcuts ("Hey Siri, quiz me on Data Engineering")
+
+### macOS App
+
+Mac Catalyst from the iOS app, or standalone SwiftUI. Menu bar status item showing due-card count (similar to studyctl-status.sh).
+
+### Cloud Sync (AWS)
+
+```
+┌─────────────┐     ┌──────────────┐     ┌─────────────┐
+│ iPhone App  │────→│ API Gateway  │────→│ DynamoDB    │
+│ iPad App    │     │ + Lambda     │     │ per-user    │
+│ macOS App   │←────│ + Cognito    │←────│ partitioned │
+│ PWA         │     └──────────────┘     └─────────────┘
+└─────────────┘
+```
+
+| Component | Service | Purpose |
+|---|---|---|
+| Auth | Cognito | User pools, social login (Apple ID, Google) |
+| API | API Gateway + Lambda | REST API for sync |
+| Storage | DynamoDB | Card reviews, progress, per-user partition key |
+| Notifications | SNS + APNS | Push notifications for due reviews |
+| Content | S3 | Flashcard/quiz JSON, audio files |
+
+**DynamoDB schema:**
+
+```
+PK: USER#<user_id>
+SK: CARD#<course>#<card_hash>
+Attributes: ease_factor, interval_days, next_review, last_correct, review_count
+
+PK: USER#<user_id>
+SK: SESSION#<timestamp>
+Attributes: course, mode, total, correct, duration
+
+GSI: next_review-index
+PK: USER#<user_id>
+SK: next_review
+Purpose: Query all cards due for review efficiently
+```
+
+**Sync strategy:** Offline-first with conflict resolution. Local SQLite is source of truth. Sync merges by `reviewed_at` timestamp (latest wins). DynamoDB Streams for real-time sync between devices.
+
+### Cost Estimate (AWS)
+
+For a single user (your usage):
+- DynamoDB on-demand: ~$0.00/month (well within free tier)
+- Lambda: ~$0.00/month (free tier)
+- API Gateway: ~$0.00/month (free tier)
+- S3: ~$0.50/month (audio files)
+- Cognito: free for <50k MAU
+- **Total: ~$0.50/month**
+
+For multi-user (if you release it):
+- DynamoDB: ~$5-10/month per 1000 active users
+- Per-user partition key prevents noisy neighbours
 
 ---
 
 ## Implementation Order
 
-1. **Phase 1: Textual TUI** — faster to build, immediate value at the desk
-2. **Phase 2: Web app** — richer experience, mobile access, audio integration
-3. **Phase 3 (optional): Obsidian export** — `pdf-by-chapters export-obsidian` converting JSON to Obsidian flashcard format
+1. **Phase 1: Textual TUI** — 1-2 sessions. Immediate value.
+2. **Phase 2: PWA web app** — 2-3 sessions. Mobile study unlocked.
+3. **Phase 2.5: Obsidian export** — 1 session. `pdf-by-chapters export-obsidian` for Spaced Repetition plugin users.
+4. **Phase 3: Native iOS** — Multi-week project. Only after PWA validates UX.
+5. **Phase 3.5: AWS sync** — After native app. Enables multi-device.
 
 ## Risks
 
 | Risk | Mitigation |
 |---|---|
-| Cross-package import (`pdf_by_chapters.review` from `studyctl`) | Both installed as tools; review.py has zero external deps |
-| FastAPI adds dependency weight | Optional extra, only installed if `studyctl[serve]` |
-| Mobile browser quirks | Test on Safari iOS early; Pico CSS handles most issues |
-| Audio files are large (50MB+) | Serve directly from filesystem, no copying |
+| Cross-package import breaks | Copy loader code into studyctl (60 lines, zero coupling) |
+| FastAPI adds dependency weight | Optional extra `studyctl[serve]` |
+| Mobile browser quirks | Test Safari iOS early; Pico CSS handles most |
+| Audio files large (50MB+) | Serve from filesystem, cache in service worker |
+| SM-2 algorithm complexity | Start simple (double interval on correct, reset on wrong) |
+| PWA offline cache stale | Version cache, prompt user to refresh |
+| Native app maintenance burden | Don't build until PWA proves the patterns |
+| AWS costs at scale | DynamoDB on-demand, per-user partition, free tier covers personal use |
+| SwiftUI learning curve | You have iOS dev experience? If not, consider React Native |
