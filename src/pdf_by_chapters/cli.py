@@ -927,8 +927,9 @@ def from_obsidian(
         help="Use existing notebook instead of creating one.",
     ),
     no_generate: bool = typer.Option(
-        False, "--no-generate", help="Upload only, skip artifact generation."
+        False, "--no-generate", help="Upload only, skip all artifact generation."
     ),
+    no_audio: bool = typer.Option(False, "--no-audio", help="Skip audio generation."),
     no_download: bool = typer.Option(
         False, "--no-download", help="Generate but don't download artifacts."
     ),
@@ -1038,7 +1039,9 @@ def from_obsidian(
         return
 
     # Step 3: Generate artifacts for each source
-    artifact_types = ["audio"]
+    artifact_types: list[str] = []
+    if not no_audio:
+        artifact_types.append("audio")
     if not no_quiz:
         artifact_types.append("quiz")
     if not no_flashcards:
@@ -1063,34 +1066,35 @@ def from_obsidian(
                 console.print(f"\n  [{i}/{len(sources)}] {src_title}")
 
                 # --- Audio ---
-                try:
-                    console.print("    Generating audio...")
-                    status = await client.artifacts.generate_audio(
-                        nb_id,
-                        source_ids=[source.id],
-                        instructions=f"Create an engaging audio deep-dive for: {src_title}",
-                    )
-                    if status.is_failed or not status.task_id:
-                        console.print(
-                            f"    [yellow]Audio rejected: {status.error or 'unknown'}[/yellow]"
+                if not no_audio:
+                    try:
+                        console.print("    Generating audio...")
+                        status = await client.artifacts.generate_audio(
+                            nb_id,
+                            source_ids=[source.id],
+                            instructions=f"Create an engaging audio deep-dive for: {src_title}",
                         )
-                    else:
-                        await client.artifacts.wait_for_completion(
-                            nb_id, status.task_id, timeout=900.0
-                        )
-                        with contextlib.suppress(Exception):
-                            await client.artifacts.rename(nb_id, status.task_id, display_name)
-                        if not no_download:
-                            dl_path = downloads_dir / f"{i:02d}-{safe_name}.mp3"
-                            await client.artifacts.download_audio(
-                                nb_id, str(dl_path), artifact_id=status.task_id
+                        if status.is_failed or not status.task_id:
+                            console.print(
+                                f"    [yellow]Audio rejected: {status.error or 'unknown'}[/yellow]"
                             )
-                            console.print(f"    Downloaded: {dl_path.name}")
-                        console.print("    [green]Audio done.[/green]")
-                except TimeoutError:
-                    console.print("    [yellow]Audio timed out[/yellow]")
-                except Exception as exc:
-                    console.print(f"    [yellow]Audio error: {exc}[/yellow]")
+                        else:
+                            await client.artifacts.wait_for_completion(
+                                nb_id, status.task_id, timeout=900.0
+                            )
+                            with contextlib.suppress(Exception):
+                                await client.artifacts.rename(nb_id, status.task_id, display_name)
+                            if not no_download:
+                                dl_path = downloads_dir / f"{i:02d}-{safe_name}.mp3"
+                                await client.artifacts.download_audio(
+                                    nb_id, str(dl_path), artifact_id=status.task_id
+                                )
+                                console.print(f"    Downloaded: {dl_path.name}")
+                            console.print("    [green]Audio done.[/green]")
+                    except TimeoutError:
+                        console.print("    [yellow]Audio timed out[/yellow]")
+                    except Exception as exc:
+                        console.print(f"    [yellow]Audio error: {exc}[/yellow]")
 
                 # --- Quiz ---
                 if not no_quiz:
