@@ -932,12 +932,17 @@ def from_obsidian(
     no_download: bool = typer.Option(
         False, "--no-download", help="Generate but don't download artifacts."
     ),
+    no_quiz: bool = typer.Option(False, "--no-quiz", help="Skip quiz generation."),
+    no_flashcards: bool = typer.Option(
+        False, "--no-flashcards", help="Skip flashcard generation."
+    ),
     subdir: str | None = typer.Option(
         None, "--subdir", "-s", help="Subdirectory within source (e.g. 'study-notes')."
     ),
 ) -> None:
-    """Convert Obsidian markdown to PDFs, upload to NotebookLM, and generate audio.
+    """Convert Obsidian markdown to PDFs, upload to NotebookLM, and generate artifacts.
 
+    Generates audio, quiz, and flashcards per source by default.
     Renders mermaid diagrams and code blocks properly in PDFs using pandoc.
     Requires: pandoc (brew install pandoc) and @mermaid-js/mermaid-cli
     (npm install -g @mermaid-js/mermaid-cli).
@@ -1032,10 +1037,17 @@ def from_obsidian(
         console.print(f"\nexport NOTEBOOK_ID={nb_id}")
         return
 
-    # Step 3: Generate audio for each source
-    console.print("[bold]Step 3:[/bold] Generating audio overviews...")
+    # Step 3: Generate artifacts for each source
+    artifact_types = ["audio"]
+    if not no_quiz:
+        artifact_types.append("quiz")
+    if not no_flashcards:
+        artifact_types.append("flashcards")
+    console.print(f"[bold]Step 3:[/bold] Generating artifacts ({', '.join(artifact_types)})...")
 
     async def _generate_and_download() -> None:
+        import contextlib
+
         async with await NotebookLMClient.from_storage() as client:
             sources = await client.sources.list(nb_id)
             sources.sort(key=lambda s: s.title or "")
@@ -1045,55 +1057,115 @@ def from_obsidian(
 
             for i, source in enumerate(sources, 1):
                 src_title = source.title or f"source-{i}"
-                console.print(f"\n  [{i}/{len(sources)}] Generating audio for: {src_title}")
+                safe_name = sanitize_filename(src_title)
+                display_name = src_title.replace("-", " ").replace("_", " ").title()
 
+                console.print(f"\n  [{i}/{len(sources)}] {src_title}")
+
+                # --- Audio ---
                 try:
+                    console.print("    Generating audio...")
                     status = await client.artifacts.generate_audio(
                         nb_id,
                         source_ids=[source.id],
                         instructions=f"Create an engaging audio deep-dive for: {src_title}",
                     )
-
                     if status.is_failed or not status.task_id:
                         console.print(
-                            f"  [yellow]Generation rejected: "
-                            f"{status.error or 'unknown error'}[/yellow]"
+                            f"    [yellow]Audio rejected: {status.error or 'unknown'}[/yellow]"
                         )
-                        continue
-
-                    console.print("  Waiting for completion...")
-                    await client.artifacts.wait_for_completion(
-                        nb_id, status.task_id, timeout=900.0
-                    )
-                    console.print("  [green]Audio ready.[/green]")
-
-                    # Rename artifact with Title Case
-                    import contextlib
-
-                    safe_name = sanitize_filename(src_title)
-                    display_name = src_title.replace("-", " ").replace("_", " ").title()
-                    with contextlib.suppress(Exception):
-                        await client.artifacts.rename(nb_id, status.task_id, display_name)
-
-                    # Download
-                    if not no_download:
-                        filename = f"{i:02d}-{safe_name}.mp3"
-                        dl_path = downloads_dir / filename
-                        await client.artifacts.download_audio(
-                            nb_id, str(dl_path), artifact_id=status.task_id
+                    else:
+                        await client.artifacts.wait_for_completion(
+                            nb_id, status.task_id, timeout=900.0
                         )
-                        console.print(f"  Downloaded: {dl_path.name}")
-
+                        with contextlib.suppress(Exception):
+                            await client.artifacts.rename(nb_id, status.task_id, display_name)
+                        if not no_download:
+                            dl_path = downloads_dir / f"{i:02d}-{safe_name}.mp3"
+                            await client.artifacts.download_audio(
+                                nb_id, str(dl_path), artifact_id=status.task_id
+                            )
+                            console.print(f"    Downloaded: {dl_path.name}")
+                        console.print("    [green]Audio done.[/green]")
                 except TimeoutError:
-                    console.print(f"  [yellow]Timed out for {src_title}[/yellow]")
+                    console.print("    [yellow]Audio timed out[/yellow]")
                 except Exception as exc:
-                    console.print(f"  [yellow]Error: {exc}[/yellow]")
+                    console.print(f"    [yellow]Audio error: {exc}[/yellow]")
 
-                # Gap between generations
+                # --- Quiz ---
+                if not no_quiz:
+                    try:
+                        console.print("    Generating quiz...")
+                        status = await client.artifacts.generate_quiz(
+                            nb_id,
+                            source_ids=[source.id],
+                            instructions=f"Create a quiz for: {src_title}",
+                        )
+                        if status.is_failed or not status.task_id:
+                            console.print(
+                                f"    [yellow]Quiz rejected: {status.error or 'unknown'}[/yellow]"
+                            )
+                        else:
+                            await client.artifacts.wait_for_completion(
+                                nb_id, status.task_id, timeout=300.0
+                            )
+                            with contextlib.suppress(Exception):
+                                await client.artifacts.rename(
+                                    nb_id, status.task_id, f"{display_name} Quiz"
+                                )
+                            if not no_download:
+                                dl_path = downloads_dir / f"{i:02d}-{safe_name}-quiz.json"
+                                await client.artifacts.download_quiz(
+                                    nb_id, str(dl_path), artifact_id=status.task_id
+                                )
+                                console.print(f"    Downloaded: {dl_path.name}")
+                            console.print("    [green]Quiz done.[/green]")
+                    except TimeoutError:
+                        console.print("    [yellow]Quiz timed out[/yellow]")
+                    except Exception as exc:
+                        console.print(f"    [yellow]Quiz error: {exc}[/yellow]")
+
+                # --- Flashcards ---
+                if not no_flashcards:
+                    try:
+                        console.print("    Generating flashcards...")
+                        status = await client.artifacts.generate_flashcards(
+                            nb_id,
+                            source_ids=[source.id],
+                            instructions=f"Create flashcards for: {src_title}",
+                        )
+                        if status.is_failed or not status.task_id:
+                            console.print(
+                                f"    [yellow]Flashcards rejected: "
+                                f"{status.error or 'unknown'}[/yellow]"
+                            )
+                        else:
+                            await client.artifacts.wait_for_completion(
+                                nb_id, status.task_id, timeout=300.0
+                            )
+                            with contextlib.suppress(Exception):
+                                await client.artifacts.rename(
+                                    nb_id,
+                                    status.task_id,
+                                    f"{display_name} Flashcards",
+                                )
+                            if not no_download:
+                                dl_path = downloads_dir / f"{i:02d}-{safe_name}-flashcards.json"
+                                await client.artifacts.download_flashcards(
+                                    nb_id, str(dl_path), artifact_id=status.task_id
+                                )
+                                console.print(f"    Downloaded: {dl_path.name}")
+                            console.print("    [green]Flashcards done.[/green]")
+                    except TimeoutError:
+                        console.print("    [yellow]Flashcards timed out[/yellow]")
+                    except Exception as exc:
+                        console.print(f"    [yellow]Flashcards error: {exc}[/yellow]")
+
+                # Gap between sources
                 if i < len(sources):
                     import time
 
-                    console.print("  [dim]Waiting 30s before next...[/dim]")
+                    console.print("  [dim]Waiting 30s before next source...[/dim]")
                     time.sleep(30)
 
     asyncio.run(_generate_and_download())
