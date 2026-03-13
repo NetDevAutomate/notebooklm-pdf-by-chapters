@@ -937,6 +937,9 @@ def from_obsidian(
     no_flashcards: bool = typer.Option(
         False, "--no-flashcards", help="Skip flashcard generation."
     ),
+    skip_convert: bool = typer.Option(
+        False, "--skip-convert", help="Skip PDF conversion, use existing PDFs."
+    ),
     subdir: str | None = typer.Option(
         None, "--subdir", "-s", help="Subdirectory within source (e.g. 'study-notes')."
     ),
@@ -972,13 +975,22 @@ def from_obsidian(
     console.print(f"[bold]Output:[/bold] {resolved_output}")
     console.print()
 
-    # Step 1: Convert markdown to PDFs
-    console.print("[bold]Step 1:[/bold] Converting markdown to PDF...")
-    try:
-        pdfs = convert_directory(resolved_source, resolved_output)
-    except (ConversionError, ValueError) as exc:
-        console.print(f"[red]{exc}[/red]")
-        raise typer.Exit(1) from None
+    # Step 1: Convert markdown to PDFs (or use existing)
+    if skip_convert:
+        pdf_dir = resolved_output / "pdfs"
+        pdfs = sorted(pdf_dir.glob("*.pdf")) if pdf_dir.is_dir() else []
+        if pdfs:
+            console.print(f"[dim]Step 1: Skipped, using {len(pdfs)} existing PDFs.[/dim]")
+        else:
+            console.print("[red]No existing PDFs found. Run without --skip-convert first.[/red]")
+            raise typer.Exit(1)
+    else:
+        console.print("[bold]Step 1:[/bold] Converting markdown to PDF...")
+        try:
+            pdfs = convert_directory(resolved_source, resolved_output)
+        except (ConversionError, ValueError) as exc:
+            console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(1) from None
 
     if not pdfs:
         console.print("[red]No PDFs generated. Check conversion errors above.[/red]")
