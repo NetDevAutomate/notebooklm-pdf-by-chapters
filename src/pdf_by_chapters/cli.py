@@ -1068,12 +1068,18 @@ def from_obsidian(
             sources.sort(key=lambda s: s.title or "")
 
             downloads_dir = resolved_output / "downloads"
-            downloads_dir.mkdir(parents=True, exist_ok=True)
+            audio_dir = downloads_dir / "audio"
+            quiz_dir = downloads_dir / "quizzes"
+            flashcards_dir = downloads_dir / "flashcards"
+            for d in [audio_dir, quiz_dir, flashcards_dir]:
+                d.mkdir(parents=True, exist_ok=True)
 
             for i, source in enumerate(sources, 1):
                 src_title = source.title or f"source-{i}"
-                safe_name = sanitize_filename(src_title)
-                display_name = src_title.replace("-", " ").replace("_", " ").title()
+                # Strip .pdf extension from source title before sanitizing
+                clean_title = src_title.removesuffix(".pdf").removesuffix(".PDF")
+                safe_name = sanitize_filename(clean_title)
+                display_name = clean_title.replace("-", " ").replace("_", " ").title()
 
                 console.print(f"\n  [{i}/{len(sources)}] {src_title}")
 
@@ -1097,7 +1103,7 @@ def from_obsidian(
                             with contextlib.suppress(Exception):
                                 await client.artifacts.rename(nb_id, status.task_id, display_name)
                             if not no_download:
-                                dl_path = downloads_dir / f"{i:02d}-{safe_name}.mp3"
+                                dl_path = audio_dir / f"{i:02d}-{safe_name}.mp3"
                                 await client.artifacts.download_audio(
                                     nb_id, str(dl_path), artifact_id=status.task_id
                                 )
@@ -1130,7 +1136,7 @@ def from_obsidian(
                                     nb_id, status.task_id, f"{display_name} Quiz"
                                 )
                             if not no_download:
-                                dl_path = downloads_dir / f"{i:02d}-{safe_name}-quiz.json"
+                                dl_path = quiz_dir / f"{i:02d}-{safe_name}.json"
                                 await client.artifacts.download_quiz(
                                     nb_id, str(dl_path), artifact_id=status.task_id
                                 )
@@ -1166,7 +1172,7 @@ def from_obsidian(
                                     f"{display_name} Flashcards",
                                 )
                             if not no_download:
-                                dl_path = downloads_dir / f"{i:02d}-{safe_name}-flashcards.json"
+                                dl_path = flashcards_dir / f"{i:02d}-{safe_name}.json"
                                 await client.artifacts.download_flashcards(
                                     nb_id, str(dl_path), artifact_id=status.task_id
                                 )
